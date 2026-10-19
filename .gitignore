@@ -1,0 +1,16 @@
+# dane i sekrety — nigdy do repozytorium
+data/
+backups/
+logs/
+*.enc
+*.enc.tmp
+*.pem
+*.key
+
+# build / python
+dist/
+__pycache__/
+*.pyc
+.venv/
+venv/
+wheels/

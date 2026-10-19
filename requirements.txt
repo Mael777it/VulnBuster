@@ -1,0 +1,2 @@
+cryptography>=41
+openpyxl>=3.1   # opcjonalnie: import plików .xlsx

@@ -1,0 +1,4 @@
+CVE	Aplikacja	Wersja naprawiona
+CVE-2024-0985	PostgreSQL	12.18
+CVE-2024-0985	PostgreSQL	14.11
+CVE-2024-0985	PostgreSQL	16.2

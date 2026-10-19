@@ -1,0 +1,26 @@
+VulnBuster - instalacja na serwerze w labie (Windows Server, dostep przez RDP)
+=============================================================================
+
+1. Skopiuj folder VulnBuster (albo rozpakuj VulnBuster-portable.zip) np. do C:\VulnBuster.
+   Nie trzeba instalowac Pythona - jest w podfolderze python\.
+
+2. PowerShell "Uruchom jako administrator":
+      cd C:\VulnBuster
+      powershell -ExecutionPolicy Bypass -File .\install-task.ps1
+
+   Aplikacja startuje przy kazdym rozruchu serwera jako SYSTEM, nasluchuje tylko na
+   127.0.0.1:8443 (dostepna wylacznie dla osob zalogowanych na tym serwerze przez RDP).
+   Na pulpicie wszystkich uzytkownikow pojawi sie skrot "VulnBuster".
+
+3. Otworz skrot, utworz konto administratora (pierwsze uruchomienie), potem w
+   "Uzytkownicy" zaloz konta pozostalym osobom (hasla tymczasowe).
+
+Wazne:
+ - Uzytkownicy RDP NIE powinni byc administratorami tego serwera (admin moze czytac pamiec
+   procesu i pliki). Pliki w data\ maja uprawnienia tylko dla SYSTEM i Administratorow.
+ - Po restarcie serwera sejf jest zablokowany - pierwsza osoba, ktora sie zaloguje, go odblokuje.
+ - Kopie zapasowe: data\backups\ (co godzine i przed kazdym importem). Kopiuj je tez poza serwer.
+ - Logi: logs\vulnbuster.log
+ - Reczne uruchomienie (bez zadania): start.bat
+ - Odinstalowanie zadania: .\uninstall-task.ps1  (dane zostaja)
+ - Aktualizacja aplikacji: uninstall-task.ps1 -> podmien folder app\ -> install-task.ps1

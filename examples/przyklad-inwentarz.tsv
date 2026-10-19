@@ -1,0 +1,7 @@
+Nazwa hosta	Adres IP	Typ	System	Ekspozycja	Aplikacja	Wersja	Właściciel	Administrator	Środowisko
+db-prod-01	10.10.1.11	serwer	RHEL 9.4	DMZ	PostgreSQL	14.9	Jan Kowalski	zespół DB	prod
+db-prod-02	10.10.1.12	serwer	RHEL 9.4	wewnętrzna	PostgreSQL	16.4	Jan Kowalski	zespół DB	prod
+db-erp-legacy	10.10.1.20	serwer	CentOS 7	wewnętrzna	PostgreSQL	11.22	Anna Nowak	zespół DB	prod
+db-test-01	10.20.1.5	serwer	Ubuntu 22.04	wewnętrzna	PostgreSQL	12.17	Piotr Wiśniewski	zespół DB	test
+vpn-gw-01	203.0.113.10	urządzenie sieciowe	FortiOS	Internet	FortiOS	7.2.5	Sieć	NOC	prod
+web-01	10.30.0.5	serwer	Debian 12	Internet	Apache httpd	2.4.57-2+deb12u1	Marta Zielińska	zespół WWW	prod
