@@ -15,10 +15,11 @@ const ACTION_LABELS = {
   'kev.fetch': 'Pobranie katalogu KEV', 'kev.upload': 'Wgranie katalogu KEV', 'kev.triage': 'Decyzja KEV',
   'exception.create': 'Nowy wyjątek', 'exception.update': 'Zmiana wyjątku', 'exception.delete': 'Usunięcie wyjątku',
   'import.commit': 'Import z Excela', 'import.rename': 'Zmiana nazwy importu', 'settings.update': 'Zmiana ustawień',
+  'host.bulk': 'Masowa zmiana hostów', 'ticket.create': 'Zgłoszenie do realizatora', 'ticket.delete': 'Usunięcie zgłoszenia',
 };
 const TYPE_LABELS = {
   host: 'Host', product: 'Aplikacja', cve: 'CVE', exception: 'Wyjątek', installation: 'Instalacja', user: 'Użytkownik',
-  kev_decision: 'Decyzja KEV (produkt)', settings: 'Ustawienia',
+  kev_decision: 'Decyzja KEV (produkt)', settings: 'Ustawienia', ticket: 'Zgłoszenie',
 };
 const FIELD_LABELS = {
   hostname: 'Nazwa', ip: 'IP', type: 'Typ', os: 'System', environment: 'Środowisko', owner: 'Właściciel', admin: 'Administrator',
@@ -29,6 +30,9 @@ const FIELD_LABELS = {
   reported_cves: 'CVE z importu', reason: 'Powód', review_at: 'Przegląd', active: 'Aktywne', role: 'Rola',
   display_name: 'Nazwa wyświetlana', must_change: 'Wymuszona zmiana hasła', decision: 'Decyzja', note: 'Notatka',
   product_ids: 'Aplikacje', contact: 'Od kogo', compensating: 'Kompensacja', no_auto_exposure: 'Bez auto-mitygacji',
+  company: 'Spółka', team: 'Zespół', assessment: 'Ocena', os_version: 'Wersja systemu', teams: 'Zespoły', team_rules: 'Reguły zespołów',
+  sla_days: 'SLA', ticket_template: 'Szablon zgłoszenia', ticket_subject: 'Temat zgłoszenia', ticket_no: 'Nr zgłoszenia', subject: 'Temat',
+  import_ignore: 'Ignorowane aplikacje', hosts: 'Hosty', deadline: 'Termin',
 };
 const OP = { create: ['dodano', 'green'], update: ['zmieniono', 'blue'], delete: ['usunięto', 'red'] };
 

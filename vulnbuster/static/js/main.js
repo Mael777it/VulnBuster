@@ -16,6 +16,8 @@ route(/^\/imports$/, viewImports, 'import');
 route(/^\/compare$/, viewCompare, 'compare');
 route(/^\/exceptions$/, viewExceptions, 'exceptions');
 route(/^\/audit$/, viewAudit, 'audit');
+route(/^\/reports$/, viewReports, 'reports');
+route(/^\/tickets$/, viewTickets, 'tickets');
 route(/^\/users$/, viewUsers, 'users');
 route(/^\/account$/, viewAccount, '');
 route(/^\/settings$/, viewSettings, 'settings');
@@ -44,6 +46,9 @@ function showShell() {
         <a href="#/products" data-nav="products">Aplikacje</a>
         <a href="#/hosts" data-nav="hosts">Hosty i urządzenia</a>
         <a href="#/exceptions" data-nav="exceptions">Wyjątki <span class="count hidden" id="exccount"></span></a>
+        <div class="sep"></div>
+        <a href="#/reports" data-nav="reports">Raporty (spółki, zespoły)</a>
+        <a href="#/tickets" data-nav="tickets">Zgłoszenia do realizatorów</a>
         <div class="sep"></div>
         <a href="#/import" data-nav="import" class="w">Import z Excela</a>
         <a href="#/compare" data-nav="compare">Porównanie importów</a>
@@ -80,10 +85,10 @@ document.addEventListener('keydown', (e) => {
 
 async function refreshCounts() {
   try {
-    const d = await GET('/api/dashboard');
+    const d = await GET('/api/counts');
     const k = $('#kevcount'), x = $('#exccount');
     if (k) { k.textContent = d.kev_pending; k.classList.toggle('hidden', !d.kev_pending); }
-    if (x) { x.textContent = d.exceptions_overdue.length; x.classList.toggle('hidden', !d.exceptions_overdue.length); }
+    if (x) { x.textContent = d.exceptions_overdue; x.classList.toggle('hidden', !d.exceptions_overdue); }
   } catch (e) { /* ignoruj */ }
 }
 

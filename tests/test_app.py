@@ -279,3 +279,118 @@ class TestImporterDetection(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTeamsReportsTickets(unittest.TestCase):
+    """Spółki, zespoły, raporty grupowane, Excel, zgłoszenia, wiele gałęzi, normalizacja nazw."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.dir = tempfile.mkdtemp()
+        cls.app = App(os.path.join(cls.dir, "data.json.enc"))
+        r = cls.app.dispatch("POST", "/api/init", {}, {"username": "admin", "password": PW}, None)
+        cls.tok = r["_session"]
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.dir)
+
+    def call(self, m, p, body=None, q=None):
+        return self.app.dispatch(m, p, q or {}, body or {}, self.tok)
+
+    def test_flow(self):
+        c = self.call
+        text = ("AssetName;AssetTypename;IPAddress;OS;OSVersion;Software;softwareVersion;SoftwarePublisher;Spółka\n"
+                "WS001;Windows;10.0.0.1;Win 11;10.0.22631;PostgreSQL 14;14.9;PGDG;Spółka A\n"
+                "WS001;Windows;10.0.0.1;Win 11;10.0.22631;Security Update for Windows (KB5034441);;MS;Spółka A\n"
+                "SRV01;Windows;10.0.1.1;Win 2019;10.0.17763;PostgreSQL 14;14.9;PGDG;Spółka B\n"
+                "SRV01;Windows;10.0.1.1;Win 2019;10.0.17763;PostgreSQL 16;16.1;PGDG;Spółka B\n"
+                "lnx01;Linux;10.0.2.1;Red Hat Enterprise Linux 8.9;;PostgreSQL 14;14.11;PGDG;Spółka A\n"
+                "sw01;Switch;10.0.3.1;Cisco IOS XE;17.9.4;;;;Spółka B\n")
+        a = c("POST", "/api/import/analyze", {"text": text})
+        m = [x["field"] for x in a["columns"]]
+        self.assertEqual(m, ["hostname", "host_type", "ip", "os", "os_version", "product", "version", "vendor", "company"])
+        p = a["preview"]
+        self.assertEqual(p["ignored_total"], 1)
+        names = {x["name"] for x in p["new_products_counts"]}
+        self.assertTrue({"PostgreSQL", "Windows 11", "Windows Server 2019", "Red Hat Enterprise Linux",
+                         "Cisco IOS XE"} <= names, names)
+        c("POST", "/api/import/commit", {"token": a["token"], "mapping": m, "name": "ls"})
+        prods = {x["name"]: x for x in c("GET", "/api/products")["products"]}
+        pg = prods["PostgreSQL"]["id"]
+        self.assertEqual(prods["PostgreSQL"]["hosts"], 4)        # SRV01 ma dwie gałęzie = dwie instalacje
+        hosts = {h["hostname"]: h for h in c("GET", "/api/hosts")["hosts"]}
+        self.assertEqual(hosts["WS001"]["team"], "helpdesk")
+        self.assertEqual(hosts["SRV01"]["team"], "windows")
+        self.assertEqual(hosts["lnx01"]["team"], "linux")
+        self.assertEqual(hosts["sw01"]["team"], "network")
+        self.assertEqual(hosts["SRV01"]["company"], "Spółka B")
+        # reguła CVE + ocena z terminem
+        c("PUT", "/api/cves/CVE-2024-0985", {
+            "title": "PostgreSQL REFRESH MATERIALIZED VIEW", "description": "Late privilege drop.",
+            "rules": [{"product_id": pg, "branches": [{"branch": "14", "fixed": "14.11"}, {"branch": "16", "fixed": "16.2"}]}],
+            "assessment": {"risk": "high", "score": "7,5", "impact": "Przejęcie bazy ERP.",
+                           "exploitation": "Uwierzytelniony użytkownik bazy wykonuje dowolny SQL jako superuser.",
+                           "deadline": "2026-01-15"}})
+        cv = c("GET", "/api/cves/CVE-2024-0985")
+        self.assertEqual(cv["cve"]["assessment"]["score"], 7.5)
+        self.assertEqual(cv["cve"]["assessment"]["assessed_by"], "admin")
+        # raport per spółka dla PostgreSQL
+        r = c("POST", "/api/reports/grouped", {"group": "company", "product_id": pg})
+        g = {x["label"]: x for x in r["groups"]}
+        self.assertEqual(g["Spółka B"]["open"], 2)               # 14.9 i 16.1 na SRV01
+        self.assertEqual(g["Spółka A"]["open"], 1)               # WS001 14.9 (lnx01 ma 14.11)
+        self.assertTrue(all(row["overdue"] for row in g["Spółka B"]["rows"]))
+        # raport per zespół (CVE)
+        r = c("POST", "/api/reports/grouped", {"group": "team", "cve_id": "CVE-2024-0985"})
+        self.assertEqual({x["label"] for x in r["groups"] if x["open"]}, {"Helpdesk", "Windows team"})
+        x = c("POST", "/api/reports/grouped/xlsx", {"group": "team", "cve_id": "CVE-2024-0985"})
+        self.assertTrue(x["_binary"][:2] == b"PK")
+        # zgłoszenia: osobno helpdesk i windows team
+        t = c("POST", "/api/tickets/preview", {"cve_id": "CVE-2024-0985"})["tickets"]
+        self.assertEqual(sorted(tt["team_label"] for tt in t), ["Helpdesk", "Windows team"])
+        win = next(tt for tt in t if tt["team"] == "windows")
+        self.assertIn("Przejęcie bazy ERP", win["body"])
+        self.assertIn("jako superuser", win["body"])
+        self.assertIn("Wysokie (7.5/10)", win["body"])
+        self.assertIn("2026-01-15", win["subject"])
+        self.assertIn("SRV01", win["body"])
+        self.assertIn("16.2", win["body"])
+        e = c("POST", "/api/tickets/eml", {"to": "win@example.com", "subject": win["subject"], "body": win["body"],
+                                           "csv": win["csv"]})
+        self.assertIn(b"X-Unsent: 1", e["_binary"])
+        c("POST", "/api/tickets", {"cve_id": "CVE-2024-0985", "team": "windows", "ticket_no": "INC123",
+                                   "subject": win["subject"]})
+        t2 = c("POST", "/api/tickets/preview", {"cve_id": "CVE-2024-0985"})["tickets"]
+        self.assertEqual(next(tt for tt in t2 if tt["team"] == "windows")["sent"]["ticket_no"], "INC123")
+        # aplikacja przypisana do zespołu (np. DBA) wygrywa z zespołem hosta
+        st = c("GET", "/api/settings")
+        c("PUT", "/api/settings", {"teams": st["teams"] + [{"id": "dba", "name": "DBA", "email": "dba@example.com"}]})
+        c("PUT", f"/api/products/{pg}", {"team": "dba"})
+        t3 = c("POST", "/api/tickets/preview", {"cve_id": "CVE-2024-0985", "split": "team_company"})["tickets"]
+        self.assertEqual([(tt["team_label"], tt["company"]) for tt in t3], [("DBA", "Spółka B"), ("DBA", "Spółka A")])
+        self.assertEqual(t3[0]["email"], "dba@example.com")
+        # masowa zmiana spółki
+        c("PUT", "/api/hosts/bulk", {"ids": [hosts["sw01"]["id"]], "fields": {"company": "Spółka C"}})
+        self.assertIn("Spółka C", [x["name"] for x in c("GET", "/api/companies")["companies"]])
+        # ponowny import: obserwacje w osobnych plikach, porównanie działa
+        a2 = c("POST", "/api/import/analyze", {"text": text.replace(";14.9;", ";14.11;")})
+        c("POST", "/api/import/commit", {"token": a2["token"], "mapping": m, "name": "ls2"})
+        imps = c("GET", "/api/imports")["imports"]
+        cmp = c("GET", "/api/imports/compare", q={"a": imps[1]["id"], "b": imps[0]["id"]})
+        self.assertEqual(cmp["counts"].get("patched"), 2)
+        self.assertTrue(os.path.exists(os.path.join(self.dir, "imports", imps[0]["id"] + ".obs.enc")))
+        d = c("GET", "/api/dashboard")
+        self.assertTrue(d["by_team"] and d["by_company"])
+        self.assertTrue(self.app.vault.verify_chain()["ok"])
+
+
+class TestNormalization(unittest.TestCase):
+    def test_names(self):
+        for raw, exp in [("PostgreSQL 14", "PostgreSQL"), ("7-Zip 23.01 (x64)", "7-Zip"),
+                         ("Mozilla Firefox (x64 en-US)", "Mozilla Firefox"), ("Google Chrome", "Google Chrome"),
+                         ("Microsoft Visual C++ 2015-2022 Redistributable (x64) - 14.38.33135",
+                          "Microsoft Visual C++ 2015-2022 Redistributable")]:
+            self.assertEqual(I.normalize_product_name(raw), exp)
+        self.assertEqual(I.os_to_product("Win 2019", ""), ("Windows Server 2019", ""))
+        self.assertEqual(I.os_to_product("Ubuntu 22.04.4 LTS", ""), ("Ubuntu", "22.04.4"))

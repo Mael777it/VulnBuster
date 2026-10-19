@@ -20,6 +20,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 from . import engine as E
 from . import feeds
 from . import importer as I
+from . import tickets as T
+from . import xlsx_export as X
 from . import __author__, __license__, __url__, __version__
 from .storage import Vault, WrongPassphrase, canon, now_iso
 
@@ -53,6 +55,7 @@ TRACK = {
     "user": (lambda db: db["users"], lambda o: o.get("username", "?")),
     "kev_decision": (lambda db: db["kev_product_map"], lambda o: o.get("label", "?")),
     "settings": (lambda db: {"settings": db["settings"]}, lambda o: "Ustawienia"),
+    "ticket": (lambda db: {t["id"]: t for t in db.get("tickets", [])}, lambda o: (o.get("subject") or "")[:80]),
 }
 DIFF_IGNORE = {"updated_at", "last_seen", "history", "import_id", "first_seen", "updated_by", "last_login",
                "password_changed_at"}
@@ -100,20 +103,22 @@ class App:
         self.routes = []
         self.user = None          # bieżący użytkownik (ustawiany pod blokadą sejfu)
         self._pending = None      # zmiana do zapisania po wykonaniu handlera
+        self._dash = None         # pamięć podręczna pulpitu (do następnego zapisu)
         self._register()
 
     # ------------------------------------------------------------ routing
-    def route(self, method, pattern, auth=True, role=None):
+    def route(self, method, pattern, auth=True, role=None, heavy=False):
+        """heavy=True: operacja zmienia inwentarz (instalacje) — dziennik porównuje także instalacje."""
         rx = re.compile("^" + re.sub(r"\{(\w+)\}", r"(?P<\1>[^/]+)", pattern) + "$")
         role = role or ("viewer" if method == "GET" else "editor")
 
         def deco(fn):
-            self.routes.append((method, rx, fn, auth, role))
+            self.routes.append((method, rx, fn, auth, role, heavy))
             return fn
         return deco
 
     def dispatch(self, method, path, query, body, token):
-        for m, rx, fn, auth, role in self.routes:
+        for m, rx, fn, auth, role, heavy in self.routes:
             if m != method:
                 continue
             mt = rx.match(path)
@@ -131,7 +136,7 @@ class App:
                 require(ROLES[user["role"]] >= ROLES[role],
                         f"Brak uprawnień (wymagana rola: {ROLE_LABELS[role]})", 403)
                 self.user, self._pending = user, None
-                before = self.snapshot() if method != "GET" else None
+                before = self.snapshot(heavy) if method != "GET" else None
                 try:
                     res = fn(body=body, query=query, **params)
                     if self._pending:
@@ -158,8 +163,9 @@ class App:
         self._pending = {"action": action, "detail": detail, "backup": backup}
 
     # ------------------------------------------------------------ dziennik zmian
-    def snapshot(self):
-        return {t: {k: canon(v) for k, v in get(self.db).items()} for t, (get, _) in TRACK.items()}
+    def snapshot(self, heavy=False):
+        return {t: {k: canon(v) for k, v in get(self.db).items()} for t, (get, _) in TRACK.items()
+                if heavy or t != "installation"}
 
     def label(self, typ, key, obj):
         if typ == "installation":
@@ -183,6 +189,13 @@ class App:
                 return "; ".join(out)
             if f == "triage":
                 return f"{v.get('decision')} — {v.get('note') or 'bez notatki'} ({v.get('verified_by') or '?'}, {v.get('verified_at')})"
+            if f == "assessment":
+                return (f"ryzyko: {E.RISK_LABELS.get(v.get('risk'), '—')}, ocena: {v.get('score') or '—'}, "
+                        f"termin: {v.get('deadline') or '—'}; wpływ: {(v.get('impact') or '—')[:120]}; "
+                        f"wykorzystanie: {(v.get('exploitation') or '—')[:120]}")
+            if f == "team":
+                return self.db["settings"].get("teams") and next(
+                    (t["name"] for t in self.db["settings"]["teams"] if t["id"] == v), v) or v
             if f == "mitigations":
                 return "; ".join(f"{m.get('group') or m.get('cve_id')}: {m.get('description') or ''}" for m in v)
             if f == "product_ids":
@@ -196,9 +209,9 @@ class App:
         return v
 
     def diff(self, before):
-        after = self.snapshot()
+        after = self.snapshot("installation" in before)
         changes, stats = [], {}
-        for typ in TRACK:
+        for typ in before:
             b, a = before[typ], after[typ]
             for key in set(b) | set(a):
                 if b.get(key) == a.get(key):
@@ -235,6 +248,19 @@ class App:
             entry["truncated"] = len(changes) - MAX_CHANGES_PER_ENTRY
         self.vault.save(force_backup=p["backup"])
         self.vault.append_audit(entry)
+
+    def load_obs(self, imp):
+        """Obserwacje importu z osobnego pliku (z uwzględnieniem scalonych aplikacji)."""
+        if imp.get("observations") is not None:
+            obs = imp["observations"]
+        elif imp.get("archived"):
+            return None
+        else:
+            obs = self.vault.read_observations(imp["id"])
+        red = self.db.get("product_redirects") or {}
+        if obs and red:
+            obs = [dict(o, p=red.get(o["p"], o["p"])) if o["p"] in red else o for o in obs]
+        return obs
 
     def log_event(self, user, action, detail=""):
         if self.vault.unlocked:
@@ -306,7 +332,7 @@ class App:
     def product_row(self, p, usage, cve_count):
         st = self.db["settings"]
         return {**{k: p.get(k) for k in ("id", "name", "vendor", "aliases", "category", "status", "notes",
-                                          "verified_at", "verified_by", "created_at", "updated_at")},
+                                          "verified_at", "verified_by", "created_at", "updated_at", "team")},
                 "hosts": usage.get(p["id"], 0), "cves": cve_count.get(p["id"], 0),
                 "stale": E.staleness(p.get("verified_at"), st)}
 
@@ -585,11 +611,30 @@ class App:
             return {"settings": self.db["settings"], "triage": TRIAGE, "product_status": PRODUCT_STATUS,
                     "status_labels": E.LABELS, "exposure": E.EXPOSURE_LABELS,
                     "fields": [{"id": f, "label": l} for f, l in I.FIELDS], "today": today(),
-                    "me": self.me(self.user), "roles": ROLE_LABELS, "app": APP_NAME, "about": ABOUT}
+                    "me": self.me(self.user), "roles": ROLE_LABELS, "app": APP_NAME, "about": ABOUT,
+                    "teams": self.db["settings"].get("teams", []), "team_rule_fields": E.TEAM_RULE_FIELDS,
+                    "group_fields": E.GROUP_FIELDS, "risk_labels": E.RISK_LABELS,
+                    "ticket_defaults": {"subject": T.DEFAULT_SUBJECT, "template": T.DEFAULT_TEMPLATE,
+                                        "placeholders": T.PLACEHOLDERS},
+                    "companies": sorted({h.get("company") for h in self.db["hosts"].values() if h.get("company")})}
 
         @r("GET", "/api/dashboard")
         def dashboard(body, query):
-            return E.dashboard(self.db)
+            key = (id(self.db), self.vault.rev, date.today().isoformat())
+            if self._dash and self._dash[0] == key:
+                return self._dash[1]
+            res = E.dashboard(self.db)
+            self._dash = (key, res)
+            return res
+
+        @r("GET", "/api/counts")
+        def counts(body, query):
+            db = self.db
+            pending = sum(1 for c in db["kev"]["entries"] if not (db["cves"].get(c, {}).get("triage") or {}).get("decision"))
+            today_ = date.today()
+            exc = sum(1 for e in db["exceptions"] if e.get("active", True) and E.parse_date(e.get("review_at"))
+                      and E.parse_date(e.get("review_at")) < today_)
+            return {"kev_pending": pending, "exceptions_overdue": exc}
 
         # ---------------- wyszukiwanie
         @r("GET", "/api/search")
@@ -615,10 +660,10 @@ class App:
                         c.get("description"), k.get("vendorProject"), k.get("product"), k.get("vulnerabilityName"),
                         *names]
             cves = [self.cve_row(c) for c in db["cves"].values() if hit(*cve_texts(c))]
-            hosts = [{k: h.get(k) for k in ("id", "hostname", "ip", "owner", "os", "type", "exposure")}
+            hosts = [{k: h.get(k) for k in ("id", "hostname", "ip", "owner", "os", "type", "exposure", "company")}
                      for h in db["hosts"].values()
                      if hit(h.get("hostname"), h.get("ip"), h.get("owner"), h.get("admin"), h.get("notes"),
-                            h.get("os"), h.get("user"))]
+                            h.get("os"), h.get("user"), h.get("company"))]
             known = {c["id"] for c in cves}
             kev = []
             for e in db["kev"]["entries"].values():
@@ -654,6 +699,11 @@ class App:
             for f in ("vendor", "category", "notes"):
                 if f in b:
                     p[f] = clean(b[f])
+            if "team" in b:
+                tid = clean(b["team"], 60)
+                require(not tid or any(t["id"] == tid for t in self.db["settings"].get("teams", [])),
+                        "Nieznany zespół")
+                p["team"] = tid
             if "aliases" in b:
                 al = b["aliases"]
                 if isinstance(al, str):
@@ -690,7 +740,7 @@ class App:
             self.save("product.update", p["name"])
             return {"ok": True}
 
-        @r("DELETE", "/api/products/{pid}")
+        @r("DELETE", "/api/products/{pid}", heavy=True)
         def product_delete(body, query, pid):
             p = self.db["products"].pop(pid, None)
             require(p, "Brak produktu", 404)
@@ -701,7 +751,7 @@ class App:
             self.save("product.delete", p["name"], backup=True)
             return {"ok": True}
 
-        @r("POST", "/api/products/{pid}/merge")
+        @r("POST", "/api/products/{pid}/merge", heavy=True)
         def product_merge(body, query, pid):
             into = body.get("into")
             require(pid != into, "Nie można scalić produktu z samym sobą")
@@ -711,9 +761,10 @@ class App:
             for k, inst in list(self.db["inventory"].items()):
                 if inst["product_id"] == pid:
                     del self.db["inventory"][k]
-                    nk = E.inv_key(inst["host_id"], into)
+                    base = E.inv_key(inst["host_id"], pid)
+                    nk = E.inv_key(inst["host_id"], into) + (k[len(base):] if k.startswith(base) else "")
                     if nk not in self.db["inventory"]:
-                        self.db["inventory"][nk] = dict(inst, product_id=into)
+                        self.db["inventory"][nk] = dict(inst, product_id=into, key=nk)
             for c in self.db["cves"].values():
                 rules = c.get("rules", [])
                 s = next((x for x in rules if x["product_id"] == pid), None)
@@ -725,10 +776,11 @@ class App:
                         rules.remove(s)
                     else:
                         s["product_id"] = into
-            for imp in self.db["imports"]:
-                for o in imp.get("observations", []):
-                    if o["p"] == pid:
-                        o["p"] = into
+            red = self.db.setdefault("product_redirects", {})
+            for k_, v_ in list(red.items()):
+                if v_ == pid:
+                    red[k_] = into
+            red[pid] = into
             for e in self.db["exceptions"]:
                 if e.get("product_id") == pid:
                     e["product_id"] = into
@@ -741,7 +793,7 @@ class App:
         @r("GET", "/api/products/{pid}/report")
         def product_report(body, query, pid):
             require(pid in self.db["products"], "Brak produktu", 404)
-            return E.product_report(self.db, pid)
+            return E.product_report(self.db, pid, self.load_obs)
 
         # ---------------- hosty
         @r("GET", "/api/hosts")
@@ -751,8 +803,57 @@ class App:
             rows.sort(key=lambda h: (h["hostname"] or "").lower())
             return {"hosts": rows}
 
-        HOST_FIELDS = ("hostname", "ip", "type", "os", "environment", "owner", "admin", "user", "location",
-                       "criticality", "exposure", "notes")
+        HOST_FIELDS = ("hostname", "ip", "type", "os", "os_version", "environment", "owner", "admin", "user",
+                       "location", "criticality", "exposure", "notes", "company", "team")
+        BULK_FIELDS = ("company", "team", "exposure", "environment", "owner", "admin", "location", "criticality", "type")
+
+        def check_team(v):
+            require(not v or any(t["id"] == v for t in self.db["settings"].get("teams", [])), "Nieznany zespół")
+
+        @r("PUT", "/api/hosts/bulk")
+        def hosts_bulk(body, query):
+            ids = [i for i in body.get("ids") or [] if i in self.db["hosts"]]
+            require(ids, "Nie zaznaczono hostów")
+            fields = {k: clean(v, 200) for k, v in (body.get("fields") or {}).items() if k in BULK_FIELDS}
+            require(fields, "Wybierz pole do zmiany")
+            if "team" in fields:
+                check_team(fields["team"])
+            for hid in ids:
+                h = self.db["hosts"][hid]
+                h.update(fields)
+                h["updated_at"] = stamp()
+            self.save("host.bulk", f"{len(ids)} hostów: " + ", ".join(f"{k}={v or '—'}" for k, v in fields.items()))
+            return {"ok": True, "updated": len(ids)}
+
+        @r("GET", "/api/companies")
+        def companies(body, query):
+            cnt = {}
+            for h in self.db["hosts"].values():
+                c = h.get("company") or ""
+                cnt[c] = cnt.get(c, 0) + 1
+            return {"companies": [{"name": k, "hosts": v} for k, v in sorted(cnt.items(), key=lambda x: x[0].lower())]}
+
+        @r("POST", "/api/teams/test", role="viewer")
+        def teams_test(body, query):
+            """Ile hostów trafia do którego zespołu przy podanych (lub zapisanych) regułach."""
+            db = dict(self.db)
+            db["settings"] = dict(self.db["settings"])
+            if "team_rules" in body:
+                db["settings"]["team_rules"] = body["team_rules"]
+            if "teams" in body:
+                db["settings"]["teams"] = body["teams"]
+            res = E.TeamResolver(db)
+            per_rule, per_team, examples = {}, {}, {}
+            for h in db["hosts"].values():
+                tid, src = res.host_team(h)
+                per_team[tid] = per_team.get(tid, 0) + 1
+                per_rule[src] = per_rule.get(src, 0) + 1
+                examples.setdefault(tid, [])
+                if len(examples[tid]) < 5:
+                    examples[tid].append(h.get("hostname"))
+            return {"per_team": [{"team": k, "label": res.label(k), "hosts": v, "examples": examples.get(k, [])}
+                                 for k, v in sorted(per_team.items(), key=lambda x: -x[1])],
+                    "per_rule": per_rule}
 
         @r("POST", "/api/hosts")
         def host_create(body, query):
@@ -762,6 +863,7 @@ class App:
             h = {"id": hid, "mitigations": [], "created_at": now_iso(), "updated_at": now_iso()}
             for f in HOST_FIELDS:
                 h[f] = clean(body.get(f))
+            check_team(h.get("team"))
             self.db["hosts"][hid] = h
             self.save("host.create", hn)
             return {"id": hid}
@@ -780,11 +882,12 @@ class App:
                 if f in body:
                     h[f] = clean(body[f])
             require(h.get("hostname"), "Nazwa hosta jest wymagana")
+            check_team(h.get("team"))
             h["updated_at"] = stamp()
             self.save("host.update", h["hostname"])
             return {"ok": True}
 
-        @r("DELETE", "/api/hosts/{hid}")
+        @r("DELETE", "/api/hosts/{hid}", heavy=True)
         def host_delete(body, query, hid):
             h = self.db["hosts"].pop(hid, None)
             require(h, "Brak hosta", 404)
@@ -815,7 +918,7 @@ class App:
             self.save("host.mitigation.del", h["hostname"])
             return {"ok": True}
 
-        @r("POST", "/api/hosts/{hid}/installations")
+        @r("POST", "/api/hosts/{hid}/installations", heavy=True)
         def inst_add(body, query, hid):
             h = self.db["hosts"].get(hid)
             require(h, "Brak hosta", 404)
@@ -825,11 +928,11 @@ class App:
                 require(name, "Podaj produkt")
                 pid, _ = self.find_or_create_product(name)
             require(pid in self.db["products"], "Brak produktu", 404)
-            k = E.inv_key(hid, pid)
+            k = body.get("key") if body.get("key") in self.db["inventory"] else E.inv_key(hid, pid)
             old = self.db["inventory"].get(k) or {}
             ver = clean(body.get("version"), 100)
             hist = list(old.get("history", [])) + [{"import_id": "manual", "version": ver, "date": today()}]
-            self.db["inventory"][k] = {"host_id": hid, "product_id": pid, "version": ver,
+            self.db["inventory"][k] = {"key": k, "host_id": hid, "product_id": pid, "version": ver,
                                        "reported_cves": old.get("reported_cves", []),
                                        "first_seen": old.get("first_seen", now_iso()), "last_seen": now_iso(),
                                        "import_id": "manual", "removed": False, "history": hist[-20:]}
@@ -839,13 +942,16 @@ class App:
             self.save("inventory.set", f"{h['hostname']} / {p['name']} {ver}")
             return {"ok": True}
 
-        @r("DELETE", "/api/inventory/{hid}/{pid}")
+        @r("DELETE", "/api/inventory/{hid}/{pid}", heavy=True)
         def inst_remove(body, query, hid, pid):
-            k = E.inv_key(hid, pid)
-            inst = self.db["inventory"].get(k)
-            require(inst, "Brak wpisu", 404)
-            inst["removed"], inst["removed_at"] = True, now_iso()
-            self.save("inventory.remove", k)
+            key = query.get("key")
+            keys = [key] if key else [k for k, i in self.db["inventory"].items()
+                                      if i["host_id"] == hid and i["product_id"] == pid and not i.get("removed")]
+            keys = [k for k in keys if k in self.db["inventory"]]
+            require(keys, "Brak wpisu", 404)
+            for k in keys:
+                self.db["inventory"][k]["removed"], self.db["inventory"][k]["removed_at"] = True, now_iso()
+            self.save("inventory.remove", ", ".join(keys))
             return {"ok": True}
 
         # ---------------- CVE
@@ -869,7 +975,8 @@ class App:
             prods = {r["product_id"]: self.db["products"].get(r["product_id"], {}).get("name", "?")
                      for r in c.get("rules", [])}
             return {"exists": True, "cve": c, "kev": k, "impact": E.cve_impact(self.db, cid), "product_names": prods,
-                    "stale": E.staleness((c.get("triage") or {}).get("verified_at"), self.db["settings"])}
+                    "stale": E.staleness((c.get("triage") or {}).get("verified_at"), self.db["settings"]),
+                    "tickets": [t for t in self.db.get("tickets", []) if t.get("cve") == cid]}
 
         @r("PUT", "/api/cves/{cid}")
         def cve_put(body, query, cid):
@@ -887,6 +994,28 @@ class App:
                 c["groups"] = [clean(g, 100) for g in body["groups"] or [] if clean(g)]
             if "no_auto_exposure" in body:
                 c["no_auto_exposure"] = bool(body["no_auto_exposure"])
+            if "assessment" in body and isinstance(body["assessment"], dict):
+                a = body["assessment"]
+                risk = a.get("risk") or None
+                require(risk is None or risk in E.RISK_LABELS, "Niepoprawny poziom ryzyka")
+                score = a.get("score")
+                if score in (None, ""):
+                    score = None
+                else:
+                    try:
+                        score = round(float(str(score).replace(",", ".")), 1)
+                    except ValueError:
+                        raise ApiError(400, "Ocena musi być liczbą 0–10")
+                    require(0 <= score <= 10, "Ocena musi być w zakresie 0–10")
+                dl = clean(a.get("deadline"), 10) or None
+                require(dl is None or E.parse_date(dl), "Niepoprawna data terminu")
+                new = {"risk": risk, "score": score, "impact": clean(a.get("impact"), 8000),
+                       "exploitation": clean(a.get("exploitation"), 8000),
+                       "recommendation": clean(a.get("recommendation"), 8000), "deadline": dl}
+                old = c.get("assessment") or {}
+                if any(new.get(k) != old.get(k) for k in new):
+                    new.update(assessed_by=self.uname, assessed_at=today())
+                    c["assessment"] = new
             if "rules" in body:
                 rules = []
                 for rr in body["rules"] or []:
@@ -983,7 +1112,8 @@ class App:
                     "ransomware": e.get("knownRansomwareCampaignUse") == "Known",
                     "triage": t, "stale": E.staleness(t.get("verified_at"), st) if t.get("decision") else None,
                     "has_rules": bool(c.get("rules")),
-                    "candidates": E.kev_candidates(db, e.get("vendorProject"), e.get("product"), usage),
+                    "candidates": E.kev_candidates(db, e.get("vendorProject"), e.get("product"), usage,
+                                                   linked=set((prior or {}).get("product_ids") or [])),
                     "prior": ({**prior, "stale": E.staleness(prior.get("verified_at"), st)} if prior else None),
                 })
             return {"items": out, "total": total, "updated_at": db["kev"].get("updated_at"),
@@ -1135,20 +1265,43 @@ class App:
             a = I.analyze(self.db, table)
             mapping = [c["field"] for c in a["columns"]]
             prev = imp_run(table, mapping, a["split_product_version"], body.get("options") or {}, None, False)
+            prof = self.db["mapping_profiles"].get(a["signature"]) if a["profile_used"] else None
             return {"token": tok, **a, "rows": len(table["rows"]), "sheets": table["sheets"],
-                    "has_header": table["has_header"], "warnings": table["warnings"], "preview": prev}
+                    "has_header": table["has_header"], "warnings": table["warnings"], "preview": prev,
+                    "profile_options": (prof or {}).get("options"), "profile_split": (prof or {}).get("split")}
+
+        def imp_opts(opts):
+            st = self.db["settings"]
+            o = {"update_hosts": True, "replace_scope": False, "unknown": "create",
+                 "normalize": st.get("import_normalize", True), "os_as_app": st.get("import_os_as_app", True)}
+            o.update({k: v for k, v in (opts or {}).items() if k in o})
+            require(o["unknown"] in ("create", "skip"), "Niepoprawna opcja")
+            return o
 
         def imp_run(table, mapping, split, opts, name, commit):
             require(isinstance(mapping, list) and len(mapping) == len(table["headers"]), "Niepoprawne mapowanie")
             recs = I.build_records(table, mapping, split)
-            target = self.db if commit else I.stage(self.db)
+            opts = imp_opts(opts)
             if commit:
                 self.vault.backup(reason="before-import")
                 staged = I.stage(self.db)
+                staged["settings"] = dict(self.db["settings"])
                 res = I.apply_import(staged, recs, name, dict(opts, user=self.uname))
                 self.db.update(staged)
+                imp = self.db["imports"][-1]
+                obs = imp.pop("observations", [])
+                imp["installations"] = len(obs)
+                imp["options"] = opts
+                self.vault.write_observations(imp["id"], obs)
+                keep = int(self.db["settings"].get("history_keep") or 24)
+                live = [i for i in self.db["imports"] if not i.get("archived")]
+                for old in live[:-keep] if len(live) > keep else []:
+                    old["archived"] = True
+                    self.vault.delete_observations(old["id"])
                 return res
-            return I.apply_import(target, recs, name, opts)
+            staged = I.stage(self.db)
+            staged["settings"] = dict(self.db["settings"])
+            return I.apply_import(staged, recs, name, opts)
 
         @r("POST", "/api/import/preview")
         def imp_preview(body, query):
@@ -1156,7 +1309,7 @@ class App:
             return imp_run(c["table"], body.get("mapping"), bool(body.get("split")), body.get("options") or {},
                            None, False)
 
-        @r("POST", "/api/import/commit")
+        @r("POST", "/api/import/commit", heavy=True)
         def imp_commit(body, query):
             c = cached(body.get("token"))
             mapping = body.get("mapping")
@@ -1166,7 +1319,8 @@ class App:
                           clean(body.get("name"), 200), True)
             if body.get("save_profile", True) and c["table"]["has_header"]:
                 self.db["mapping_profiles"][I.signature(c["table"]["headers"])] = {
-                    "mapping": mapping, "headers": c["table"]["headers"], "saved_at": now_iso()}
+                    "mapping": mapping, "headers": c["table"]["headers"], "saved_at": now_iso(),
+                    "options": imp_opts(body.get("options")), "split": bool(body.get("split"))}
             self.save("import.commit", f"{res['import_id']}: {res['stats']['records']} wierszy", backup=False)
             self.import_cache.pop(body.get("token"), None)
             return res
@@ -1174,7 +1328,8 @@ class App:
         @r("GET", "/api/imports")
         def imports(body, query):
             return {"imports": [{k: i.get(k) for k in ("id", "name", "created_at", "created_by", "rows",
-                                                         "new_hosts", "new_products")} | {"installations": len(i.get("observations", []))}
+                                                         "new_hosts", "new_products", "archived")}
+                                | {"installations": i.get("installations", len(i.get("observations") or []))}
                                 for i in reversed(self.db["imports"])]}
 
         @r("PUT", "/api/imports/{iid}")
@@ -1190,7 +1345,122 @@ class App:
             ids = {i["id"] for i in self.db["imports"]}
             a, b = query.get("a"), query.get("b")
             require(a in ids and b in ids, "Wybierz dwa importy")
-            return E.compare_imports(self.db, a, b)
+            imps = {i["id"]: i for i in self.db["imports"]}
+            require(not imps[a].get("archived") and not imps[b].get("archived"),
+                    "Szczegóły tego importu zostały zarchiwizowane (limit historii w ustawieniach)")
+            return E.compare_imports(self.db, a, b, self.load_obs)
+
+        # ---------------- raporty grupowane
+        def report_params(b):
+            group = b.get("group") or "company"
+            require(group in E.GROUP_FIELDS, "Niepoprawne grupowanie")
+            pids = [x for x in (b.get("product_ids") or ([b["product_id"]] if b.get("product_id") else []))
+                    if x in self.db["products"]]
+            cve = clean(b.get("cve_id"), 40).upper() or None
+            if cve:
+                require(cve in self.db["cves"], f"Brak {cve} w bazie — najpierw dodaj CVE i regułę wersji")
+            filters = {k: clean(v, 200) for k, v in (b.get("filters") or {}).items()
+                       if k in E.GROUP_FIELDS and v not in (None, "")}
+            return dict(group=group, product_ids=pids or None, cve_id=cve, kev_only=bool(b.get("kev_only")),
+                        only_open=b.get("only_open", True) is not False, filters=filters)
+
+        def report_title(prm):
+            parts = []
+            if prm["product_ids"]:
+                parts.append(", ".join(self.db["products"][x]["name"] for x in prm["product_ids"]))
+            if prm["cve_id"]:
+                parts.append(prm["cve_id"])
+            if prm["kev_only"]:
+                parts.append("tylko KEV")
+            for k, v in prm["filters"].items():
+                lbl = E.TeamResolver(self.db).label(v) if k == "team" else v
+                parts.append(f"{E.GROUP_FIELDS[k]}: {lbl}")
+            return f"Raport podatności wg: {E.GROUP_FIELDS[prm['group']].lower()}" + (
+                " — " + " · ".join(parts) if parts else "")
+
+        @r("POST", "/api/reports/grouped", role="viewer")
+        def report_grouped(body, query):
+            prm = report_params(body)
+            rep_ = E.grouped_report(self.db, **prm)
+            rep_["title"] = report_title(prm)
+            limit = int(body.get("row_limit") or 3000)
+            for g in rep_["groups"]:
+                g["rows_total"] = len(g["rows"])
+                g["rows"] = g["rows"][:limit]
+            return rep_
+
+        @r("POST", "/api/reports/grouped/xlsx", role="viewer")
+        def report_xlsx(body, query):
+            prm = report_params(body)
+            rep_ = E.grouped_report(self.db, **prm)
+            title = report_title(prm)
+            try:
+                data = X.grouped_xlsx(rep_, title)
+            except ImportError:
+                raise ApiError(500, "Brak biblioteki openpyxl na serwerze — eksport do Excela niedostępny")
+            name = re.sub(r"[^A-Za-z0-9_.-]+", "_", f"vulnbuster-raport-{prm['group']}-{today()}") + ".xlsx"
+            return {"_binary": data, "_filename": name,
+                    "_ctype": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
+
+        # ---------------- zgłoszenia do realizatorów
+        @r("POST", "/api/tickets/preview", role="viewer")
+        def tickets_preview(body, query):
+            cve = clean(body.get("cve_id"), 40).upper() or None
+            pid = body.get("product_id") or None
+            require(cve or pid, "Wybierz CVE albo aplikację")
+            if cve:
+                require(cve in self.db["cves"], "Brak CVE w bazie")
+            if pid:
+                require(pid in self.db["products"], "Brak aplikacji")
+            split = body.get("split") or "team"
+            require(split in ("team", "team_company"), "Niepoprawny podział")
+            out = T.build(self.db, cve_id=cve, product_id=pid, split=split)
+            for t in out:
+                t["rows"] = t["rows"][:500]
+            return {"tickets": out, "scope": {"cve": cve, "product": pid,
+                                              "product_name": (self.db["products"].get(pid) or {}).get("name")}}
+
+        @r("POST", "/api/tickets/eml", role="viewer")
+        def tickets_eml(body, query):
+            subject = clean(body.get("subject"), 500)
+            data = T.eml(clean(body.get("to"), 500), subject, str(body.get("body") or "")[:200000],
+                         body.get("csv") or None, filename=clean(body.get("csv_name"), 100) or "hosty.csv",
+                         sender=self.db["settings"].get("ticket_sender") or "")
+            name = re.sub(r"[^A-Za-z0-9_.-]+", "_", subject)[:80] or "zgloszenie"
+            return {"_binary": data, "_filename": name + ".eml", "_ctype": "message/rfc822"}
+
+        @r("GET", "/api/tickets", role="viewer")
+        def tickets_list(body, query):
+            out = list(reversed(self.db.get("tickets", [])))
+            if query.get("cve"):
+                out = [t for t in out if t.get("cve") == query["cve"].upper()]
+            if query.get("product"):
+                out = [t for t in out if t.get("product") == query["product"]]
+            return {"tickets": out[:500]}
+
+        @r("POST", "/api/tickets")
+        def tickets_create(body, query):
+            cve = clean(body.get("cve_id"), 40).upper() or None
+            pid = body.get("product_id") or None
+            require(cve or pid, "Brak zakresu zgłoszenia")
+            team = clean(body.get("team"), 60)
+            t = {"id": I.new_id("t"), "cve": cve, "product": pid, "team": team,
+                 "team_label": E.TeamResolver(self.db).label(team), "company": clean(body.get("company"), 200),
+                 "ticket_no": clean(body.get("ticket_no"), 100), "subject": clean(body.get("subject"), 500),
+                 "hosts": [h for h in body.get("hosts") or [] if h in self.db["hosts"]][:5000],
+                 "deadline": clean(body.get("deadline"), 10) or None, "note": clean(body.get("note"), 2000),
+                 "created_at": now_iso(), "created_by": self.uname}
+            self.db.setdefault("tickets", []).append(t)
+            self.save("ticket.create", f"{t['subject'][:120]} {('#' + t['ticket_no']) if t['ticket_no'] else ''}")
+            return {"ok": True, "ticket": t}
+
+        @r("DELETE", "/api/tickets/{tid}")
+        def tickets_delete(body, query, tid):
+            n = len(self.db.get("tickets", []))
+            self.db["tickets"] = [t for t in self.db.get("tickets", []) if t["id"] != tid]
+            require(len(self.db["tickets"]) < n, "Brak zgłoszenia", 404)
+            self.save("ticket.delete", tid)
+            return {"ok": True}
 
         # ---------------- ustawienia
         @r("GET", "/api/settings")
@@ -1214,6 +1484,58 @@ class App:
                     groups.append({"id": gid, "name": clean(g.get("name"), 120) or gid,
                                    "description": clean(g.get("description"), 500)})
                 st["groups"] = groups
+            if "teams" in body:
+                teams, ids = [], set()
+                for t in body["teams"]:
+                    name = clean(t.get("name"), 120)
+                    if not name:
+                        continue
+                    tid = clean(t.get("id"), 40) or E.norm(name)[:40]
+                    require(tid and tid not in ids and tid != E.UNASSIGNED, "Identyfikatory zespołów muszą być unikalne")
+                    ids.add(tid)
+                    em = clean(t.get("email"), 300)
+                    require(not em or all(re.match(r"^[^@\s,;]+@[^@\s,;]+\.[a-z]{2,}$", x.strip(), re.I)
+                                          for x in re.split(r"[,;]", em) if x.strip()), f"Niepoprawny e-mail: {em}")
+                    teams.append({"id": tid, "name": name, "email": em, "description": clean(t.get("description"), 300)})
+                st["teams"] = teams
+            if "team_rules" in body:
+                ids = {t["id"] for t in st.get("teams", [])}
+                rules = []
+                for rr in body["team_rules"]:
+                    pat = clean(rr.get("pattern"), 500)
+                    if not pat:
+                        continue
+                    require(rr.get("field") in E.TEAM_RULE_FIELDS, "Niepoprawne pole reguły")
+                    require(rr.get("team") in ids, f"Nieznany zespół w regule: {rr.get('team')}")
+                    rules.append({"field": rr["field"], "pattern": pat, "team": rr["team"]})
+                st["team_rules"] = rules
+            if "sla_days" in body:
+                sla = {}
+                for k_, v_ in (body["sla_days"] or {}).items():
+                    require(k_ in E.RISK_LABELS, "Niepoprawny poziom ryzyka")
+                    v_ = int(v_)
+                    require(1 <= v_ <= 3650, "SLA: niepoprawna liczba dni")
+                    sla[k_] = v_
+                st["sla_days"] = sla
+            for f, n in (("ticket_prefix", 40), ("ticket_subject", 500), ("ticket_template", 20000),
+                         ("ticket_signature", 2000), ("ticket_sender", 300), ("import_ignore", 5000)):
+                if f in body:
+                    st[f] = clean(body[f], n) if f != "ticket_template" else str(body[f] or "")[:n]
+            for f in ("import_normalize", "import_os_as_app"):
+                if f in body:
+                    st[f] = bool(body[f])
+            if "history_keep" in body:
+                v = int(body["history_keep"])
+                require(2 <= v <= 500, "Historia importów: 2–500")
+                st["history_keep"] = v
+            # zespoły usunięte z listy — wyczyść odwołania
+            ids = {t["id"] for t in st.get("teams", [])}
+            for h in self.db["hosts"].values():
+                if h.get("team") and h["team"] not in ids:
+                    h["team"] = ""
+            for p_ in self.db["products"].values():
+                if p_.get("team") and p_["team"] not in ids:
+                    p_["team"] = ""
             self.save("settings.update")
             return st
 
@@ -1326,6 +1648,17 @@ def make_handler(app: App):
             except Exception as e:  # noqa: BLE001
                 traceback.print_exc()
                 return self._send_json(500, {"error": f"Błąd serwera: {e.__class__.__name__}: {e}"})
+            if isinstance(res, dict) and "_binary" in res:
+                data = res["_binary"]
+                self.send_response(200)
+                self.send_header("Content-Type", res.get("_ctype") or "application/octet-stream")
+                fn = res.get("_filename") or "plik"
+                self.send_header("Content-Disposition", f'attachment; filename="{fn}"')
+                self.send_header("Content-Length", str(len(data)))
+                self._headers_common()
+                self.end_headers()
+                self.wfile.write(data)
+                return
             cookie = None
             if isinstance(res, dict) and "_session" in res:
                 cookie = self._cookie(res.pop("_session"))

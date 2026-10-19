@@ -26,11 +26,15 @@ import secrets
 import shutil
 import threading
 import time
+import zlib
+from collections import OrderedDict
 from datetime import datetime, timezone
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
+
+from .engine import DEFAULT_SLA, DEFAULT_TEAM_RULES, DEFAULT_TEAMS
 
 FORMAT = "vulnbuster-vault"
 SCRYPT_N, SCRYPT_R, SCRYPT_P = 2 ** 15, 8, 1
@@ -84,6 +88,19 @@ def empty_db() -> dict:
                 {"id": "user-interaction", "name": "Wymaga interakcji użytkownika",
                  "description": "Otwarcie pliku, kliknięcie linku itp."},
             ],
+            "teams": [dict(t, email="") for t in DEFAULT_TEAMS],
+            "team_rules": [dict(r) for r in DEFAULT_TEAM_RULES],
+            "import_ignore": "Security Update for *, Update for *, Hotfix for *, *Language Pack*, *(KB*)*, "
+                             "Microsoft Visual C++ * Redistributable*, Microsoft .NET * Targeting Pack*",
+            "import_normalize": True,
+            "import_os_as_app": True,
+            "history_keep": 24,
+            "sla_days": dict(DEFAULT_SLA),
+            "ticket_prefix": "VULN",
+            "ticket_subject": "",
+            "ticket_template": "",
+            "ticket_signature": "Pozdrawiam,\nZespół Bezpieczeństwa IT",
+            "ticket_sender": "",
         },
         "users": {},
         "products": {},
@@ -92,6 +109,8 @@ def empty_db() -> dict:
         "inventory": {},
         "imports": [],
         "exceptions": [],
+        "tickets": [],
+        "product_redirects": {},
         "kev": {"updated_at": None, "catalog_version": None, "entries": {}},
         "kev_product_map": {},
         "mapping_profiles": {},
@@ -111,6 +130,9 @@ class Vault:
         self.db: dict | None = None
         self.audit_entries: list = []
         self._last_backup = 0.0
+        self.imports_dir = os.path.join(os.path.dirname(self.path), "imports")
+        self._obs_cache: OrderedDict = OrderedDict()
+        self.rev = 0                       # licznik zmian (unieważnia pamięci podręczne)
 
     # ------------------------------------------------------------ stan
     @property
@@ -184,17 +206,21 @@ class Vault:
             blob = self._read_blob()
             self.file_id = _unb64(blob["file_id"])
             dek = self._open_slot(blob["slots"], username, password)
-            db = json.loads(AESGCM(dek).decrypt(_unb64(blob["nonce"]), _unb64(blob["ct"]), self._aad()))
+            db = self._decode(blob, AESGCM(dek).decrypt(_unb64(blob["nonce"]), _unb64(blob["ct"]), self._aad()))
             self._dek, self.slots, self.db = dek, blob["slots"], db
-            self._migrate()
+            self._obs_cache.clear()
             self._load_audit()
+            if self._migrate():
+                self.save(force_backup=True)
 
     def reload(self):
         """Wycofuje niezapisane zmiany w pamięci (np. po błędzie w trakcie obsługi żądania)."""
         with self.lock:
             self._require_unlocked()
             blob = self._read_blob()
-            self.db = json.loads(AESGCM(self._dek).decrypt(_unb64(blob["nonce"]), _unb64(blob["ct"]), self._aad()))
+            self.rev += 1
+            self.db = self._decode(blob, AESGCM(self._dek).decrypt(_unb64(blob["nonce"]), _unb64(blob["ct"]),
+                                                                    self._aad()))
             self.slots = blob["slots"]
             self._migrate()
 
@@ -216,10 +242,12 @@ class Vault:
     def save(self, force_backup: bool = False):
         with self.lock:
             self._require_unlocked()
+            self.rev += 1
             self.db["updated_at"] = now_iso()
             nonce = secrets.token_bytes(12)
-            ct = AESGCM(self._dek).encrypt(nonce, canon(self.db), self._aad())
-            blob = {"format": FORMAT, "v": 2, "file_id": _b64(self.file_id), "slots": self.slots,
+            raw = json.dumps(self.db, separators=(",", ":")).encode("ascii")   # szybka ścieżka enkodera C
+            ct = AESGCM(self._dek).encrypt(nonce, zlib.compress(raw, 3), self._aad())
+            blob = {"format": FORMAT, "v": 2, "file_id": _b64(self.file_id), "slots": self.slots, "comp": "zlib",
                     "nonce": _b64(nonce), "ct": _b64(ct)}
             os.makedirs(os.path.dirname(self.path), exist_ok=True)
             tmp = self.path + ".tmp"
@@ -255,6 +283,50 @@ class Vault:
     def encrypted_bytes(self) -> bytes:
         with open(self.path, "rb") as f:
             return f.read()
+
+    # ------------------------------------------------------------ obserwacje importów (osobne pliki)
+    def _obs_path(self, imp_id: str) -> str:
+        safe = "".join(ch for ch in imp_id if ch.isalnum() or ch in "_-")
+        return os.path.join(self.imports_dir, f"{safe}.obs.enc")
+
+    def write_observations(self, imp_id: str, obs: list):
+        """Lista obserwacji importu w osobnym, skompresowanym i zaszyfrowanym pliku (niezmienny po zapisie)."""
+        with self.lock:
+            self._require_unlocked()
+            os.makedirs(self.imports_dir, exist_ok=True)
+            nonce = secrets.token_bytes(12)
+            ct = AESGCM(self._dek).encrypt(nonce, zlib.compress(canon(obs), 3), b"obs|" + imp_id.encode() + self.file_id)
+            path = self._obs_path(imp_id)
+            with open(path + ".tmp", "wb") as f:
+                f.write(nonce + ct)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(path + ".tmp", path)
+            self._obs_cache[imp_id] = obs
+
+    def read_observations(self, imp_id: str):
+        with self.lock:
+            if imp_id in self._obs_cache:
+                self._obs_cache.move_to_end(imp_id)
+                return self._obs_cache[imp_id]
+            path = self._obs_path(imp_id)
+            if not os.path.exists(path):
+                return None
+            raw = open(path, "rb").read()
+            obs = json.loads(zlib.decompress(AESGCM(self._dek).decrypt(raw[:12], raw[12:],
+                                                                       b"obs|" + imp_id.encode() + self.file_id)))
+            self._obs_cache[imp_id] = obs
+            while len(self._obs_cache) > 8:
+                self._obs_cache.popitem(last=False)
+            return obs
+
+    def delete_observations(self, imp_id: str):
+        with self.lock:
+            self._obs_cache.pop(imp_id, None)
+            try:
+                os.remove(self._obs_path(imp_id))
+            except OSError:
+                pass
 
     # ------------------------------------------------------------ dziennik zmian
     def _audit_aad(self) -> bytes:
@@ -319,13 +391,34 @@ class Vault:
             raise ValueError("To nie jest plik sejfu VulnBuster (v2)")
         return blob
 
+    @staticmethod
+    def _decode(blob: dict, data: bytes) -> dict:
+        if blob.get("comp") == "zlib":
+            data = zlib.decompress(data)
+        return json.loads(data)
+
     def _require_unlocked(self):
         if not self.unlocked:
             raise RuntimeError("Sejf zablokowany")
 
-    def _migrate(self):
+    def _migrate(self) -> bool:
+        """Uzupełnia brakujące pola nowszych wersji. Zwraca True, gdy trzeba zapisać bazę."""
+        changed = False
         base = empty_db()
         for k, v in base.items():
-            self.db.setdefault(k, v)
+            if k not in self.db:
+                self.db[k] = v
+                changed = True
         for k, v in base["settings"].items():
-            self.db["settings"].setdefault(k, v)
+            if k not in self.db["settings"]:
+                self.db["settings"][k] = v
+                changed = True
+        # obserwacje importów przenoszone do osobnych plików (mniejsza baza = szybsze zapisy)
+        if self._dek is not None:
+            for imp in self.db.get("imports", []):
+                if "observations" in imp:
+                    obs = imp.pop("observations")
+                    imp["installations"] = len(obs)
+                    self.write_observations(imp["id"], obs)
+                    changed = True
+        return changed

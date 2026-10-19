@@ -223,3 +223,26 @@ code.pw { font-size: 15px; padding: 2px 8px; background: var(--panel); border: 1
 .login { grid-auto-flow: row; align-content: center; gap: 4px; }
 .login > .about { text-align: center; color: var(--muted); }
 .login > .about a { color: var(--accent); }
+
+/* ryzyko, raporty, zgłoszenia */
+.b.risk-critical { background: #7a0f14; color: #fff; }
+.b.risk-high { background: var(--red-soft); color: var(--red); }
+.b.risk-medium { background: var(--amber-soft); color: var(--amber); }
+.b.risk-low { background: var(--gray-soft); color: var(--gray); }
+.namecols { columns: 3 220px; column-gap: 24px; font-size: 12.5px; }
+.namecols > span { display: block; break-inside: avoid; padding: 1px 0; }
+details.callout > summary { font-weight: 600; }
+.bulkbar { position: sticky; top: 58px; z-index: 4; background: var(--accent-soft); border-color: var(--accent); padding: 10px 14px; }
+.ticket-body { font-size: 12.5px; line-height: 1.5; min-height: 280px; }
+.panel.ticket h2 { margin-bottom: 4px; }
+details.grp > summary { cursor: pointer; padding: 2px 0; }
+.rtitle { font-size: 17px; margin: 4px 0 2px; }
+@media print {
+  .report-inline .tile { border: 1px solid #ccc; }
+  details.grp { break-inside: auto; }
+  details.grp > summary { list-style: none; }
+  .report-inline a { color: #111; text-decoration: none; }
+  .bulkbar, .no-print { display: none !important; }
+}
+.tile.sel { outline: 2px solid var(--accent); }
+.tbl-scroll { max-height: 560px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; }

@@ -53,7 +53,7 @@ function daysTxt(d) {
 }
 const STATUS = {
   vulnerable: 'Podatne', review: 'Do weryfikacji', exception: 'Wyjątek', mitigated: 'Mitygowane',
-  fixed: 'Załatane', not_affected: 'Niepodatne', none: 'Brak CVE', rule: 'Reguła CVE', host: 'Dane hosta',
+  fixed: 'Załatane', not_affected: 'Niepodatne', none: 'Brak CVE', rule: 'Reguła CVE', host: 'Dane hosta', skip: 'Pominięte',
 };
 const badge = (s) => `<span class="b ${esc(s)}">${esc(STATUS[s] || s)}</span>`;
 function staleBadge(st, prefix = '') {
@@ -77,6 +77,53 @@ function prodBadge(s) {
   return `<span class="b ${esc(s || 'unknown')}">${esc(L[s] || L.unknown)}</span>`;
 }
 const canEdit = () => App.meta && App.meta.me.role !== 'viewer';
+const RISK = { critical: 'Krytyczne', high: 'Wysokie', medium: 'Średnie', low: 'Niskie' };
+const RISK_OPTS = [['critical', 'Krytyczne'], ['high', 'Wysokie'], ['medium', 'Średnie'], ['low', 'Niskie']];
+const riskBadge = (r) => (r ? `<span class="b risk-${esc(r)}">${esc(RISK[r] || r)}</span>` : '');
+function deadlineBadge(d, overdue, src) {
+  if (!d) return '';
+  const days = Math.round((new Date(d) - new Date(App.meta.today)) / 86400000);
+  const txt = overdue || days < 0 ? `po terminie ${-days} d` : days === 0 ? 'dziś' : `za ${days} d`;
+  const cls = overdue || days < 0 ? 'red' : days <= 7 ? 'amber' : 'outline';
+  return `<span class="b ${cls}" title="Termin${src ? ' (' + esc(src) + ')' : ''}">⏱ ${esc(d)} · ${txt}</span>`;
+}
+const teamName = (id) => {
+  if (!id || id === '__none__') return 'Nieprzypisany';
+  const t = (App.meta.teams || []).find((x) => x.id === id);
+  return t ? t.name : id;
+};
+const teamOpts = (empty) => [...(empty !== undefined ? [['', empty]] : []), ...(App.meta.teams || []).map((t) => [t.id, t.name])];
+function companyDatalist(id = 'complist') {
+  return `<datalist id="${id}">${(App.meta.companies || []).map((c) => `<option value="${esc(c)}">`).join('')}</datalist>`;
+}
+const GROUP_OPTS = [['company', 'Spółka'], ['team', 'Zespół (realizator)'], ['type', 'Typ urządzenia'], ['os', 'System'],
+  ['environment', 'Środowisko'], ['location', 'Lokalizacja'], ['owner', 'Właściciel'], ['exposure', 'Ekspozycja'], ['product', 'Aplikacja']];
+
+/* pobranie pliku z odpowiedzi POST (Excel, .eml) */
+async function downloadPost(path, body, fallbackName) {
+  const r = await fetch(path, { method: 'POST', credentials: 'same-origin',
+    headers: { 'X-Requested-With': 'vulnbuster', 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  if (!r.ok) {
+    let msg = 'HTTP ' + r.status;
+    try { msg = (await r.json()).error || msg; } catch (e) { /* brak treści */ }
+    throw new Error(msg);
+  }
+  const cd = r.headers.get('Content-Disposition') || '';
+  const m = cd.match(/filename="([^"]+)"/);
+  const blob = await r.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = m ? m[1] : (fallbackName || 'plik');
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch (e) {
+    const t = document.createElement('textarea'); t.value = text; document.body.append(t); t.select();
+    let ok = false; try { ok = document.execCommand('copy'); } catch (e2) { ok = false; }
+    t.remove(); return ok;
+  }
+}
 const byTxt = (u) => (u ? ` <span class="small faint">· ${esc(u)}</span>` : '');
 const kevBadge = (k, ransom) => (k ? '<span class="b kev">KEV</span>' : '') + (ransom ? ' <span class="b ransom">ransomware</span>' : '');
 const cveLink = (id) => `<a class="mono" href="#/cve/${enc(id)}">${esc(id)}</a>`;

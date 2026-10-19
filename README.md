@@ -11,10 +11,13 @@ Webowa aplikacja do codziennej pracy z podatnościami.
 Zakres funkcji:
 - przegląd wpisów CISA KEV,
 - reguły wersji naprawionych per gałąź,
-- import inwentarza z Excela z automatycznym rozpoznawaniem kolumn,
-- porównanie stanu przed i po patchowaniu,
-- mitygacje, ekspozycja, wyjątki,
-- raporty per host i per aplikacja,
+- import inwentarza z Excela, Lansweepera czy CMDB z automatycznym rozpoznawaniem kolumn i porządkowaniem nazw aplikacji,
+- **spółki i zespoły realizujące** (Windows, Linux, sieć, helpdesk…) przypisywane regułami,
+- **ocena podatności dla organizacji**: wpływ, sposób wykorzystania, wycena ryzyka, termin z SLA,
+- **raporty per spółka / zespół / typ sprzętu** z eksportem do Excela,
+- **gotowe zgłoszenia do helpdesku per zespół** (tekst do wklejenia albo szkic e-mail .eml z listą hostów),
+- porównanie stanu przed i po patchowaniu (także per spółka i zespół),
+- mitygacje, ekspozycja, wyjątki, raporty per host i per aplikacja,
 - konta użytkowników z rolami i **dziennikiem zmian**.
 
 Dane są w **zaszyfrowanym pliku JSON** (AES-256-GCM), dziennik zmian w osobnym zaszyfrowanym pliku tylko do dopisywania.
@@ -106,6 +109,10 @@ Zasady kont:
 - **Równoczesna edycja:** jeśli ktoś zmienił obiekt (CVE, host, aplikację), od kiedy go otworzyłeś, zapis zostaje odrzucony z informacją, kto i kiedy go zmienił. Nic nie jest nadpisywane po cichu.
 - **Wycofanie zmian:** nieudane żądanie (błąd walidacji w połowie operacji) przywraca stan z dysku. W pamięci nie zostają półzapisane dane.
 - **Kopie zapasowe:** automatycznie do `data\backups\` (co godzinę i przed każdym importem, ostatnie 30 kopii, razem z dziennikiem). Kopia otwiera się hasłem dowolnego konta, które było aktywne w chwili jej wykonania.
+- **Pliki danych:**
+  - Szczegóły importów (do porównań) są w `data\imports\`, zaszyfrowane i skompresowane. Liczbę trzymanych importów ustawiasz w Ustawieniach.
+  - Główna baza jest kompresowana, więc nawet ~100 tys. instalacji to kilka MB.
+  - Kopiując dane na inny serwer, kopiuj cały katalog `data`.
 - **Ochrona przeglądarki:**
   - cookie sesji `HttpOnly` i `SameSite=Strict`,
   - wymagany nagłówek anty-CSRF,
@@ -146,27 +153,28 @@ Obsługiwane formaty wersji to m.in.:
 - Cisco (`15.2(4)M7`),
 - OpenSSL/OpenSSH (`1.1.1w`, `9.6p1`).
 
-### 3. Import z Excela
-Zaznacz w Excelu zakres razem z nagłówkami, skopiuj (Ctrl+C) i wklej w **Import z Excela**. Możesz też wybrać plik `.xlsx` lub `.csv`. Kolumny są rozpoznawane po nagłówkach (PL/EN) i po zawartości: CVE, IP, wersje, systemy, typy urządzeń, e-maile. Mapowanie da się poprawić w podglądzie, a dla tego samego układu kolumn jest zapamiętywane.
+### 3. Import z Excela (Lansweeper, CMDB, skanery)
+Zaznacz w Excelu zakres razem z nagłówkami, skopiuj (Ctrl+C) i wklej w **Import z Excela**. Możesz też wybrać plik `.xlsx` lub `.csv`. Kolumny są rozpoznawane po nagłówkach (PL/EN, w tym nazwy z Lansweepera: `AssetName`, `AssetTypename`, `IPAddress`, `OS`, `OSVersion`, `Software`, `softwareVersion`, `SoftwarePublisher`) i po zawartości. Mapowanie da się poprawić w podglądzie, a dla tego samego układu kolumn jest zapamiętywane razem z opcjami importu. Kolejny eksport z Lansweepera to więc: wklej → sprawdź → zapisz.
 
 Rozpoznawane pola:
-- Host
-- IP
-- Typ
-- System
+- Host, IP
+- **Spółka**, **Zespół / realizator**
+- Typ, System, **Wersja / build systemu**
 - **Ekspozycja** (Internet / DMZ / wewnętrzna, także tak/nie)
-- Środowisko
-- Krytyczność
-- Lokalizacja
-- Właściciel
-- Administrator
-- Użytkownik
-- Aplikacja
-- Producent
-- Wersja
-- CVE
-- Wersja naprawiona
+- Środowisko, Krytyczność, Lokalizacja
+- Właściciel, Administrator, Użytkownik
+- Aplikacja, Producent, Wersja
+- CVE, Wersja naprawiona
 - Uwagi
+
+Porządkowanie danych z Lansweepera i podobnych źródeł:
+- **Upraszczanie nazw:** „PostgreSQL 14” → „PostgreSQL”, „7-Zip 23.01 (x64)” → „7-Zip”, „Mozilla Firefox (x64 en-US)” → „Mozilla Firefox”. W podglądzie widać, co zostało zmienione.
+- **Lista ignorowanych** (Ustawienia → Import): domyślnie aktualizacje KB, pakiety językowe i redystrybuowalne VC++. Wzorce z `*`.
+- **Tryb „tylko aplikacje z rejestru”:** pomija wszystko, czego nie ma w rejestrze. Podgląd pokazuje listę pominiętych nazw z liczbą wystąpień, żeby nic ważnego nie umknęło.
+- **Aliasy z `*`** w karcie aplikacji (np. `Mozilla Firefox*`) łączą różne warianty nazwy w jedną aplikację.
+- **System operacyjny jako aplikacja:** z kolumny systemu powstają instalacje „Windows Server 2019”, „Windows 11”, „Red Hat Enterprise Linux”, „Cisco IOS XE”, z wersją z kolumny *Wersja / build systemu*. Dzięki temu CVE systemów i firmware (częste w KEV) są oceniane tak samo jak aplikacji.
+- **Kilka gałęzi na jednym hoście** (np. PostgreSQL 14 i 16) to osobne instalacje. Kilka wersji z tej samej gałęzi: do oceny bierzemy najniższą i wyświetlamy ostrzeżenie.
+- Arkusz z samymi hostami (CMDB: host, spółka, zespół, właściciel, ekspozycja) aktualizuje dane hostów bez dotykania aplikacji.
 
 W jednym arkuszu mogą być:
 - **inwentarz** (host + aplikacja + wersja),
@@ -177,16 +185,72 @@ Zanim cokolwiek zapiszesz, zobaczysz ocenę każdego wiersza.
 
 > Ustaw kolumny z wersjami w Excelu jako **Tekst**. Excel zamienia `14.10` na liczbę `14.1`. Przy wklejaniu przez schowek ten problem nie występuje.
 
-### 4. Po oknie serwisowym
-Zaimportuj stan ponownie i otwórz **Porównanie importów**. Zobaczysz instalacje załatane, nadal podatne, z nowymi podatnościami i brakujące, a także procent skuteczności patchowania. Ocena idzie zawsze według aktualnych reguł CVE.
+### 4. Spółki i zespoły (realizatorzy)
+Każdy host ma **spółkę** (z importu, ręcznie albo masowo na liście hostów: zaznacz → „Ustaw dla zaznaczonych”) i **zespół, który go łata**. Zespół wynika z reguł w Ustawieniach, sprawdzanych od góry. Domyślne reguły:
 
-### 5. Mitygacje, ekspozycja i wyjątki
+| Reguła | Zespół |
+|---|---|
+| switch / router / firewall / IOS / FortiOS… | Networkers |
+| Windows Server | Windows team |
+| Windows 10/11, laptopy, stacje | Helpdesk |
+| Linux / RHEL / Ubuntu… | Linux team |
+
+Kolejność ustalania zespołu:
+1. zespół przypisany do **aplikacji** (np. DBA dla PostgreSQL, gdy bazę łata inny zespół niż ten od serwera),
+2. reguły po nazwie aplikacji,
+3. zespół ustawiony ręcznie na hoście,
+4. reguły hosta.
+
+Przycisk „Sprawdź przypisanie hostów” pokazuje, ile hostów trafi do którego zespołu, jeszcze przed zapisaniem reguł. Każdy zespół ma adres e-mail (kolejka helpdesku) używany w zgłoszeniach.
+
+### 5. Ocena podatności i termin
+W karcie CVE, w sekcji **„Ocena dla organizacji”**, wpisujesz:
+- wycenę ryzyka: poziom (krytyczne / wysokie / średnie / niskie) i ocenę 0–10,
+- wpływ na organizację,
+- jak podatność może zostać wykorzystana,
+- opcjonalne zalecenie,
+- termin załatania.
+
+Przycisk **„z SLA”** ustawia termin jako dziś + liczba dni z Ustawień (domyślnie 7 / 30 / 90 / 180), a przycisk **KEV** przepisuje termin CISA. Termin trafia do raportów i zgłoszeń, a przekroczony jest oznaczany jako „po terminie” (licznik na pulpicie).
+
+### 6. Raporty per spółka / zespół
+Zakładka **Raporty**: grupowanie wg spółki, zespołu, typu urządzenia, systemu, środowiska, lokalizacji, właściciela, ekspozycji lub aplikacji. Zakres to wszystkie aplikacje, jedna aplikacja (np. „PostgreSQL per spółka”) albo jedno CVE, opcjonalnie tylko KEV i filtr spółki, zespołu czy typu.
+
+Raport zawiera podsumowanie (hosty, do działań, KEV, po terminie, postęp) i szczegóły per grupa. Formy wyjścia:
+- **Excel:** arkusz podsumowania i osobny arkusz dla każdej spółki lub zespołu, z autofiltrem,
+- **CSV**,
+- **druk / PDF**.
+
+### 7. Zgłoszenia do helpdesku (per zespół)
+Z karty CVE, karty aplikacji albo z Raportów: **„Zgłoszenia do realizatorów”**. Aplikacja dzieli hosty wymagające działań wg zespołów. Np. podatność na stacjach i serwerach daje osobne zgłoszenie dla Helpdesku i dla Windows teamu. Można też dzielić wg zespołu i spółki.
+
+Każde zgłoszenie powstaje z szablonu (Ustawienia → Szablon zgłoszenia) i zawiera:
+- wycenę ryzyka i termin,
+- opis CVE,
+- sposób wykorzystania i wpływ na organizację,
+- wymagane działanie z wersjami docelowymi per gałąź,
+- listę hostów (nazwa, IP, spółka, wersja obecna → docelowa).
+
+Co możesz zrobić ze zgłoszeniem:
+- poprawić treść przed wysłaniem,
+- **skopiować** temat i treść do formularza helpdesku,
+- **pobrać szkic e-mail (.eml)**, który Outlook otwiera do wysłania. Ma adres zespołu i listę hostów w CSV jako załącznik,
+- **oznaczyć jako zgłoszone** z numerem ticketu. Widać to potem przy CVE i w historii zgłoszeń, a dziennik zmian zapisuje, kto zgłosił.
+
+### 8. Po oknie serwisowym
+Zaimportuj stan ponownie i otwórz **Porównanie importów**. Zobaczysz:
+- instalacje załatane, nadal podatne, z nowymi podatnościami i brakujące,
+- procent skuteczności patchowania, z filtrem i podsumowaniem wg spółki, zespołu albo aplikacji.
+
+Ocena idzie zawsze według aktualnych reguł CVE.
+
+### 9. Mitygacje, ekspozycja i wyjątki
 - **Mitygacja na hoście:** wybierasz grupę podatności (np. „Interfejs zarządzania”) albo konkretne CVE, opcjonalnie tylko dla jednej aplikacji. Takie podatności są liczone jako *mitygowane*.
 - **Ekspozycja „sieć wewnętrzna”:** CVE z grupą „Wymaga ekspozycji do Internetu” są mitygowane automatycznie. Można to wyłączyć w karcie CVE. Hosty wystawione do internetu są wyżej na pulpicie.
 - **Wyjątek:** informacja od właściciela, że aktualizacja nie jest możliwa. Zawiera powód, osobę przekazującą, środki kompensujące i datę przeglądu. Po terminie przeglądu wyjątek jest oznaczany na pulpicie.
 
-### 6. Raporty
-- **Host → „Raport na okno serwisowe”:** lista aplikacji do aktualizacji z minimalną wersją docelową, CVE, terminami KEV i polami do odhaczenia. Druk lub zapis do PDF z przeglądarki.
+### 10. Raporty per host i aplikacja
+- **Host → „Raport na okno serwisowe”:** lista aplikacji do aktualizacji z minimalną wersją docelową, CVE, terminami i polami do odhaczenia. Druk lub zapis do PDF z przeglądarki.
 - **Aplikacja → „Raport do druku”:** postęp patchowania, podział na gałęzie wersji, hosty z właścicielami i historia importów.
 - **Eksport CSV:** dostępny na większości list (średnik i BOM, otwiera się poprawnie w polskim Excelu).
 
@@ -203,7 +267,9 @@ run.py                  uruchomienie
 portable/               budowa paczki Windows z wbudowanym Pythonem, instalacja zadania
 vulnbuster/storage.py   sejf z kluczami per użytkownik, dziennik z łańcuchem SHA-256, kopie
 vulnbuster/versions.py  porównywanie wersji
-vulnbuster/engine.py    ocena CVE × inwentarz, mitygacje, wyjątki, raporty, porównania
+vulnbuster/engine.py    ocena CVE × inwentarz, zespoły, mitygacje, wyjątki, raporty, porównania
+vulnbuster/tickets.py   zgłoszenia do realizatorów (szablon, .eml)
+vulnbuster/xlsx_export.py  raporty do Excela
 vulnbuster/importer.py  parsowanie Excela/CSV, rozpoznawanie kolumn, import
 vulnbuster/feeds.py     CISA KEV i NVD (opcjonalnie)
 vulnbuster/server.py    serwer HTTP + API, konta, role, sesje, diff zmian

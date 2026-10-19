@@ -1,0 +1,60 @@
+AssetName;AssetTypename;IPAddress;OS;Domain;Username;Software;softwareVersion;SoftwarePublisher;Spółka;Lastseen
+WS00000;Windows;10.26.35.62;Win 11;CORP;user0;WinRAR 6.24 (64-bit);6.24.0;win.rar GmbH;Flytronic;2026-10-18 08:12:00
+WS00000;Windows;10.26.35.62;Win 11;CORP;user0;Google Chrome;130.0.6723.59;Google LLC;Flytronic;2026-10-18 08:12:00
+WS00000;Windows;10.26.35.62;Win 11;CORP;user0;Mozilla Firefox (x64 en-US);131.0.2;Mozilla;Flytronic;2026-10-18 08:12:00
+WS00000;Windows;10.26.35.62;Win 11;CORP;user0;VLC media player;3.0.20;VideoLAN;Flytronic;2026-10-18 08:12:00
+WS00000;Windows;10.26.35.62;Win 11;CORP;user0;Microsoft Office Professional Plus 2019;16.0.10411.20011;Microsoft Corporation;Flytronic;2026-10-18 08:12:00
+WS00000;Windows;10.26.35.62;Win 11;CORP;user0;Notepad++ (64-bit x64);8.6.2;Notepad++ Team;Flytronic;2026-10-18 08:12:00
+WS00000;Windows;10.26.35.62;Win 11;CORP;user0;Security Update for Windows (KB5034441);;Microsoft Corporation;Flytronic;2026-10-18 08:12:00
+WS00000;Windows;10.26.35.62;Win 11;CORP;user0;Microsoft Visual C++ 2015-2022 Redistributable (x64) - 14.38.33135;14.38.33135.0;Microsoft Corporation;Flytronic;2026-10-18 08:12:00
+WS00000;Windows;10.26.35.62;Win 11;CORP;user0;Java 8 Update 401;8.0.4010.10;Oracle;Flytronic;2026-10-18 08:12:00
+WS00000;Windows;10.26.35.62;Win 11;CORP;user0;Zoom;6.1.11;Zoom Video Communications;Flytronic;2026-10-18 08:12:00
+WS00000;Windows;10.26.35.62;Win 11;CORP;user0;Adobe Acrobat Reader DC;24.002.20965;Adobe;Flytronic;2026-10-18 08:12:00
+WS00000;Windows;10.26.35.62;Win 11;CORP;user0;Intel(R) Management Engine Components;2241.4.44.0;Intel;Flytronic;2026-10-18 08:12:00
+WS00001;Windows;10.3.105.128;Win 10;CORP;user1;Java 8 Update 401;8.0.4010.10;Oracle;Flytronic;2026-10-18 08:12:00
+WS00001;Windows;10.3.105.128;Win 10;CORP;user1;Microsoft Visual C++ 2015-2022 Redistributable (x64) - 14.38.33135;14.38.33135.0;Microsoft Corporation;Flytronic;2026-10-18 08:12:00
+WS00001;Windows;10.3.105.128;Win 10;CORP;user1;VLC media player;3.0.18;VideoLAN;Flytronic;2026-10-18 08:12:00
+WS00001;Windows;10.3.105.128;Win 10;CORP;user1;WinRAR 6.24 (64-bit);7.01.0;win.rar GmbH;Flytronic;2026-10-18 08:12:00
+WS00001;Windows;10.3.105.128;Win 10;CORP;user1;7-Zip 23.01 (x64);23.01;Igor Pavlov;Flytronic;2026-10-18 08:12:00
+WS00001;Windows;10.3.105.128;Win 10;CORP;user1;Mozilla Firefox (x64 en-US);131.0.2;Mozilla;Flytronic;2026-10-18 08:12:00
+WS00001;Windows;10.3.105.128;Win 10;CORP;user1;Microsoft Edge;129.0.2792.89;Microsoft Corporation;Flytronic;2026-10-18 08:12:00
+WS00001;Windows;10.3.105.128;Win 10;CORP;user1;Intel(R) Management Engine Components;2241.4.44.0;Intel;Flytronic;2026-10-18 08:12:00
+WS00001;Windows;10.3.105.128;Win 10;CORP;user1;Google Chrome;130.0.6723.59;Google LLC;Flytronic;2026-10-18 08:12:00
+WS00001;Windows;10.3.105.128;Win 10;CORP;user1;Security Update for Windows (KB5034441);;Microsoft Corporation;Flytronic;2026-10-18 08:12:00
+WS00001;Windows;10.3.105.128;Win 10;CORP;user1;Notepad++ (64-bit x64);8.6.2;Notepad++ Team;Flytronic;2026-10-18 08:12:00
+WS00001;Windows;10.3.105.128;Win 10;CORP;user1;Adobe Acrobat Reader DC;23.008.20470;Adobe;Flytronic;2026-10-18 08:12:00
+WS00002;Windows;10.2.39.196;Win 11;CORP;user2;Microsoft Visual C++ 2015-2022 Redistributable (x64) - 14.38.33135;14.38.33135.0;Microsoft Corporation;MindMade;2026-10-18 08:12:00
+WS00002;Windows;10.2.39.196;Win 11;CORP;user2;Java 8 Update 401;8.0.4010.10;Oracle;MindMade;2026-10-18 08:12:00
+WS00002;Windows;10.2.39.196;Win 11;CORP;user2;Mozilla Firefox (x64 en-US);131.0.2;Mozilla;MindMade;2026-10-18 08:12:00
+WS00002;Windows;10.2.39.196;Win 11;CORP;user2;Microsoft Office Professional Plus 2019;16.0.10411.20011;Microsoft Corporation;MindMade;2026-10-18 08:12:00
+WS00002;Windows;10.2.39.196;Win 11;CORP;user2;VLC media player;3.0.18;VideoLAN;MindMade;2026-10-18 08:12:00
+WS00002;Windows;10.2.39.196;Win 11;CORP;user2;Adobe Acrobat Reader DC;24.002.20965;Adobe;MindMade;2026-10-18 08:12:00
+WS00002;Windows;10.2.39.196;Win 11;CORP;user2;7-Zip 23.01 (x64);23.01;Igor Pavlov;MindMade;2026-10-18 08:12:00
+WS00002;Windows;10.2.39.196;Win 11;CORP;user2;Security Update for Windows (KB5034441);;Microsoft Corporation;MindMade;2026-10-18 08:12:00
+WS00002;Windows;10.2.39.196;Win 11;CORP;user2;Zoom;5.17.5;Zoom Video Communications;MindMade;2026-10-18 08:12:00
+WS00002;Windows;10.2.39.196;Win 11;CORP;user2;WinRAR 6.24 (64-bit);6.24.0;win.rar GmbH;MindMade;2026-10-18 08:12:00
+WS00002;Windows;10.2.39.196;Win 11;CORP;user2;Microsoft Edge;129.0.2792.89;Microsoft Corporation;MindMade;2026-10-18 08:12:00
+WS00002;Windows;10.2.39.196;Win 11;CORP;user2;Intel(R) Management Engine Components;2241.4.44.0;Intel;MindMade;2026-10-18 08:12:00
+WS00003;Windows;10.13.147.34;Win 11;CORP;user3;Microsoft Office Professional Plus 2019;16.0.10411.20011;Microsoft Corporation;Arcus;2026-10-18 08:12:00
+WS00003;Windows;10.13.147.34;Win 11;CORP;user3;Adobe Acrobat Reader DC;23.008.20470;Adobe;Arcus;2026-10-18 08:12:00
+WS00003;Windows;10.13.147.34;Win 11;CORP;user3;WinRAR 6.24 (64-bit);7.01.0;win.rar GmbH;Arcus;2026-10-18 08:12:00
+WS00003;Windows;10.13.147.34;Win 11;CORP;user3;Notepad++ (64-bit x64);8.7;Notepad++ Team;Arcus;2026-10-18 08:12:00
+WS00003;Windows;10.13.147.34;Win 11;CORP;user3;Google Chrome;128.0.6613.120;Google LLC;Arcus;2026-10-18 08:12:00
+WS00003;Windows;10.13.147.34;Win 11;CORP;user3;Zoom;6.1.11;Zoom Video Communications;Arcus;2026-10-18 08:12:00
+WS00003;Windows;10.13.147.34;Win 11;CORP;user3;Intel(R) Management Engine Components;2241.4.44.0;Intel;Arcus;2026-10-18 08:12:00
+WS00003;Windows;10.13.147.34;Win 11;CORP;user3;Mozilla Firefox (x64 en-US);131.0.2;Mozilla;Arcus;2026-10-18 08:12:00
+WS00003;Windows;10.13.147.34;Win 11;CORP;user3;Microsoft Visual C++ 2015-2022 Redistributable (x64) - 14.38.33135;14.38.33135.0;Microsoft Corporation;Arcus;2026-10-18 08:12:00
+WS00003;Windows;10.13.147.34;Win 11;CORP;user3;Java 8 Update 401;8.0.4010.10;Oracle;Arcus;2026-10-18 08:12:00
+WS00003;Windows;10.13.147.34;Win 11;CORP;user3;Microsoft Edge;130.0.2849.56;Microsoft Corporation;Arcus;2026-10-18 08:12:00
+WS00003;Windows;10.13.147.34;Win 11;CORP;user3;VLC media player;3.0.18;VideoLAN;Arcus;2026-10-18 08:12:00
+SRV-W0004;Windows;10.0.248.213;Win 2022;CORP;user4;Microsoft Edge;129.0.2792.89;Microsoft Corporation;MindMade;2026-10-18 08:12:00
+SRV-W0004;Windows;10.0.248.213;Win 2022;CORP;user4;7-Zip 23.01 (x64);23.01;Igor Pavlov;MindMade;2026-10-18 08:12:00
+SRV-W0004;Windows;10.0.248.213;Win 2022;CORP;user4;Mozilla Firefox (x64 en-US);131.0.2;Mozilla;MindMade;2026-10-18 08:12:00
+SRV-W0004;Windows;10.0.248.213;Win 2022;CORP;user4;Security Update for Windows (KB5034441);;Microsoft Corporation;MindMade;2026-10-18 08:12:00
+SRV-W0004;Windows;10.0.248.213;Win 2022;CORP;user4;WinRAR 6.24 (64-bit);6.24.0;win.rar GmbH;MindMade;2026-10-18 08:12:00
+SRV-W0004;Windows;10.0.248.213;Win 2022;CORP;user4;Intel(R) Management Engine Components;2241.4.44.0;Intel;MindMade;2026-10-18 08:12:00
+SRV-W0004;Windows;10.0.248.213;Win 2022;CORP;user4;Microsoft SQL Server 2019 (64-bit);15.0.4385.2;Microsoft Corporation;MindMade;2026-10-18 08:12:00
+SRV-W0004;Windows;10.0.248.213;Win 2022;CORP;user4;PostgreSQL 16;16.4;PostgreSQL Global Development Group;MindMade;2026-10-18 08:12:00
+sw-core-005;Switch;10.39.27.117;Cisco IOS XE;CORP;user5;Cisco IOS XE;17.12.2;Cisco;WB Group HQ;2026-10-18 08:12:00
+WS00006;Windows;10.3.52.1;Win 10;CORP;user6;Zoom;6.1.11;Zoom Video Communications;Arcus;2026-10-18 08:12:00
+WS00006;Windows;10.3.52.1;Win 10;CORP;user6;WinRAR 6.24 (64-bit);6.24.0;win.rar GmbH;Arcus;2026-10-18 08:12:00

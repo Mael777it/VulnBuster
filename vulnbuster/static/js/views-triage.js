@@ -13,6 +13,7 @@ async function viewDashboard(el) {
   <div class="tiles">
     ${t(d.open_findings, 'otwarte podatności (host×CVE)', d.open_findings ? 'red' : 'green', '#/hosts?f=open')}
     ${t(d.open_kev, 'w tym z KEV', d.open_kev ? 'red' : 'green', '#/hosts?f=kev')}
+    ${t(d.overdue, 'instalacji po terminie załatania', d.overdue ? 'red' : 'green', '#/reports?group=team')}
     ${t(d.kev_pending, 'KEV bez decyzji', d.kev_pending ? 'amber' : 'green', '#/kev')}
     ${t(d.stale.length, 'nieaktualne weryfikacje', d.stale.length ? 'amber' : 'green', '#/kev?view=stale')}
     ${t(d.exceptions_overdue.length, 'wyjątki po terminie przeglądu', d.exceptions_overdue.length ? 'violet' : '', '#/exceptions')}
@@ -33,6 +34,8 @@ async function viewDashboard(el) {
         <td>${esc(k.vendor)} <b>${esc(k.product)}</b></td><td>${triageBadge({ decision: k.decision })}</td></tr>`).join('')}
       </tbody></table></div>` : '<div class="empty">Brak danych KEV</div>'}
     </div>
+    ${breakdownPanel('Wg spółek', d.by_company, 'company')}
+    ${breakdownPanel('Wg zespołów (realizatorów)', d.by_team, 'team')}
     <div class="panel tight"><div class="panel-head"><h2>Do ponownej weryfikacji</h2><span class="small muted">próg: ${App.meta.settings.stale_warn_days} / ${App.meta.settings.stale_crit_days} dni</span></div>
       ${d.stale.length ? `<div class="tbl-wrap"><table><tbody>
       ${d.stale.map((s) => `<tr>${s.cve ? `<td>${cveLink(s.cve)}</td><td>${triageBadge({ decision: s.decision })}</td>` : `<td>${prodLink(s.product_id, s.product)}</td><td>${prodBadge('not_used')}</td>`}
@@ -48,6 +51,15 @@ async function viewDashboard(el) {
       </tbody></table></div>` : ''}
     </div>
   </div>`;
+}
+
+function breakdownPanel(title, rows, group) {
+  return `<div class="panel tight"><div class="panel-head"><h2>${esc(title)}</h2><a class="small" href="#/reports?group=${group}">raport →</a></div>
+    ${rows && rows.length ? `<div class="tbl-wrap"><table><thead><tr><th></th><th class="num">Hosty</th><th class="num">Do działań</th><th class="num">KEV</th><th>Postęp</th></tr></thead><tbody>
+    ${rows.map((g) => `<tr class="clickable" data-href="#/reports?group=${group}&${group}=${enc(g.key === '__none__' ? '' : g.key)}">
+      <td>${g.key === '__none__' ? '<span class="faint">' + esc(g.label) + '</span>' : esc(g.label)}</td><td class="num">${g.hosts}</td>
+      <td class="num">${g.open ? `<span class="b vulnerable">${g.open}</span>` : '0'}</td><td class="num">${g.open_kev ? `<span class="b kev">${g.open_kev}</span>` : '0'}</td>
+      <td>${progressBar(g.installations - g.open, g.installations)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Brak danych — przypisz spółki/zespoły hostom</div>'}</div>`;
 }
 
 /* =================================================================== WYSZUKIWARKA */
@@ -158,7 +170,7 @@ async function viewKev(el, _, q) {
 function candChip(c, checked) {
   const st = c.status === 'not_used' ? ' · <b>nie używamy</b>' : c.status === 'used' ? '' : ' · status nieznany';
   return `<label class="chip"><input type="checkbox" value="${esc(c.product_id)}"${checked ? ' checked' : ''}>
-    ${esc(c.name)} <span class="faint">· ${c.hosts} ${c.hosts === 1 ? 'host' : 'hostów'}${st}</span></label>`;
+    ${esc(c.name)} <span class="faint">· ${c.hosts} ${c.hosts === 1 ? 'host' : 'hostów'}${st}${c.linked ? ' · powiązane wcześniej' : ''}</span></label>`;
 }
 
 function kevCard(k) {
@@ -186,7 +198,7 @@ function kevCard(k) {
     <div class="bd"><div class="desc">${esc(k.description)}</div>
       ${prior}
       ${cands}
-      <div class="chips cands">${k.candidates.map((c) => candChip(c, c.hosts > 0 && c.score >= 0.8)).join('')}</div>
+      <div class="chips cands">${k.candidates.map((c) => candChip(c, c.linked || (c.hosts > 0 && c.score >= 0.8))).join('')}</div>
       <div class="mt8 row w"><input type="text" class="addprod" list="prodlist" placeholder="dodaj inną aplikację z rejestru…">
         <button class="btn sm w" data-act="addprod">Dodaj</button></div>
       ${k.triage && k.triage.note ? `<div class="mt6 small"><b>Notatka:</b> ${esc(k.triage.note)}</div>` : ''}
@@ -250,10 +262,13 @@ async function viewCve(el, [cid]) {
   };
   const k = r.kev;
   const t = c.triage || {};
+  const A = c.assessment || {};
   el.innerHTML = `
   <div class="page-head"><div><h1 class="mono">${esc(cid)} ${kevBadge(!!k, k && k.knownRansomwareCampaignUse === 'Known')}</h1>
       <div class="muted">${r.exists ? 'ostatnia zmiana ' + esc(fmtDT(c.updated_at)) : 'Nowy wpis — zapisz, aby utworzyć'}</div></div>
-    <div class="actions"><button class="btn w" data-act="nvd">Podpowiedz z NVD</button>${r.exists ? '<button class="btn danger w" data-act="del">Usuń</button>' : ''}
+    <div class="actions">${r.exists ? `<a class="btn" href="#/tickets?cve=${enc(cid)}">Zgłoszenia do realizatorów</a>
+      <a class="btn" href="#/reports?cve=${enc(cid)}&group=team">Raport per zespół</a>` : ''}
+      <button class="btn w" data-act="nvd">Podpowiedz z NVD</button>${r.exists ? '<button class="btn danger w" data-act="del">Usuń</button>' : ''}
       <button class="btn primary w" data-act="save">Zapisz CVE</button></div></div>
   ${k ? `<div class="callout bad"><b>CISA KEV</b> — ${esc(k.vendorProject)} ${esc(k.product)}: ${esc(k.vulnerabilityName)}. Dodano ${esc(k.dateAdded)}, termin ${esc(k.dueDate)}.
       <div class="mt4 small">${esc(k.requiredAction || '')}</div></div>` : ''}
@@ -278,6 +293,20 @@ async function viewCve(el, [cid]) {
       <div class="mt8 checks"><label><input type="checkbox" id="noauto"${c.no_auto_exposure ? ' checked' : ''}> nie mityguj automatycznie hostów wewnętrznych (grupa „Wymaga ekspozycji do Internetu”)</label></div>
     </div>
   </div>
+  <div class="panel" id="assess"><div class="panel-head"><h2>Ocena dla organizacji i termin załatania</h2>
+      <span class="small muted">${A.assessed_at ? `ocenił ${esc(A.assessed_by || '?')} · ${esc(A.assessed_at)}` : 'trafia do treści zgłoszeń dla realizatorów'}</span></div>
+    <div class="form">
+      <label>Ryzyko (Twoja wycena)<select name="risk">${options(RISK_OPTS, A.risk || '', '— nie oceniono —')}</select></label>
+      <label>Ocena 0–10<input type="text" name="score" value="${esc(A.score ?? '')}" placeholder="np. 8,5"></label>
+      <label>Termin załatania<span class="row"><input type="date" name="deadline" value="${esc(A.deadline || '')}" class="grow">
+        <button class="btn sm w" data-act="sla" title="Termin = dziś + SLA dla wybranego poziomu ryzyka">z SLA</button>
+        ${k && k.dueDate ? `<button class="btn sm w" data-act="kevdue" title="Termin CISA KEV">KEV ${esc(k.dueDate)}</button>` : ''}</span></label>
+      <label class="wide">Wpływ na organizację<textarea name="impact" rows="3" placeholder="Np. przejęcie serwerów bazodanowych ERP i dostęp do danych finansowych spółek; zatrzymanie produkcji…">${esc(A.impact || '')}</textarea></label>
+      <label class="wide">Jak może zostać wykorzystana<textarea name="exploitation" rows="3" placeholder="Np. zdalnie, bez uwierzytelnienia, przez port 443 interfejsu VPN; publiczny exploit; obserwowane ataki ransomware…">${esc(A.exploitation || '')}</textarea></label>
+      <label class="wide">Wymagane działanie / zalecenie (opcjonalnie — wersje docelowe dodadzą się same)<textarea name="recommendation" rows="2" placeholder="Np. aktualizacja w najbliższym oknie serwisowym; do czasu aktualizacji zablokować port 5432 z sieci użytkowników">${esc(A.recommendation || '')}</textarea></label>
+    </div>
+    <p class="small muted mt8">Termin w raportach i zgłoszeniach: Twoja data, a gdy jej brak — termin CISA KEV. Zapisujesz przyciskiem „Zapisz CVE”.</p>
+  </div>
   <div id="nvdbox"></div>
   <div class="panel"><div class="panel-head"><h2>Reguły wersji — gdzie naprawione</h2><button class="btn sm w" data-act="addrule">+ Aplikacja</button></div>
     <p class="small muted">Dla każdej aplikacji podaj gałęzie wersji i wersję, od której błąd jest naprawiony. Wersje spoza opisanych gałęzi: starsze → wg ustawienia, nowsze → niepodatne.
@@ -286,11 +315,14 @@ async function viewCve(el, [cid]) {
   </div>
   <div class="panel tight"><div class="panel-head"><h2>Wpływ na hosty</h2><div class="row">${Object.entries(r.impact.counts).filter(([, n]) => n).map(([s, n]) => badge(s).replace('</span>', ` ${n}</span>`)).join(' ')}
       <button class="btn sm" data-act="impcsv">CSV</button></div></div>
-    ${r.impact.rows.length ? `<div class="tbl-wrap"><table><thead><tr><th>Host</th><th>Aplikacja</th><th>Wersja</th><th>Status</th><th>Docelowa</th><th>Uzasadnienie</th><th>Właściciel</th></tr></thead><tbody>
-    ${r.impact.rows.map((x) => `<tr class="clickable" data-href="#/host/${enc(x.host_id)}"><td>${hostLink(x.host_id, x.hostname)}</td><td>${esc(x.product)}</td><td class="mono">${esc(x.version)}</td>
+    ${r.impact.rows.length ? `<div class="tbl-wrap"><table><thead><tr><th>Host</th><th>Spółka</th><th>Zespół</th><th>Aplikacja</th><th>Wersja</th><th>Status</th><th>Docelowa</th><th>Uzasadnienie</th><th>Właściciel</th></tr></thead><tbody>
+    ${r.impact.rows.map((x) => `<tr class="clickable" data-href="#/host/${enc(x.host_id)}"><td>${hostLink(x.host_id, x.hostname)}</td><td class="small">${esc(x.company || '')}</td><td class="small">${esc(x.team || '')}</td><td>${esc(x.product)}</td><td class="mono">${esc(x.version)}</td>
       <td>${badge(x.status)}</td><td class="mono">${esc(x.target || '')}</td><td class="small">${esc(x.reason)}${x.overlay ? `<div class="faint">${x.overlay.type === 'exception' ? 'Wyjątek: ' : 'Mitygacja: '}${esc(x.overlay.text)}</div>` : ''}</td><td>${esc(x.owner)}</td></tr>`).join('')}
     </tbody></table></div>` : '<div class="empty">Brak dopasowanych instalacji. Dodaj regułę z aplikacją, która występuje w inwentarzu, i zapisz.</div>'}
   </div>
+  ${(r.tickets || []).length ? `<div class="panel tight"><div class="panel-head"><h2>Przekazane zgłoszenia</h2><a class="small" href="#/tickets?cve=${enc(cid)}">przygotuj kolejne →</a></div>
+    <div class="tbl-wrap"><table><tbody>${r.tickets.map((x) => `<tr><td class="small nowrap">${esc(fmtDT(x.created_at))}</td><td>${esc(x.team_label)}${x.company ? ' · ' + esc(x.company) : ''}</td>
+      <td class="mono">${esc(x.ticket_no || '')}</td><td class="small">${esc(x.subject)}</td><td class="num">${(x.hosts || []).length} hostów</td><td class="small">${esc(x.created_by)}</td></tr>`).join('')}</tbody></table></div></div>` : ''}
   <div id="hist"></div>
   ${productDatalist()}`;
 
@@ -331,6 +363,7 @@ async function viewCve(el, [cid]) {
     const f = formData($('#cveform', el));
     return {
       ...f, _version: c.updated_at, groups: $$('#groups input:checked', el).map((i) => i.value), no_auto_exposure: $('#noauto', el).checked,
+      assessment: formData($('#assess', el)),
       rules: st.rules.filter((x) => x.product.trim()).map((x) => {
         const p = productByName(x.product);
         return { ...(p ? { product_id: p.id } : { product: x.product.trim() }), unlisted: x.unlisted, branches: x.branches.filter((b) => b.branch || b.fixed) };
@@ -338,6 +371,16 @@ async function viewCve(el, [cid]) {
     };
   };
   onAct(el, {
+    sla: () => {
+      const risk = $('#assess [name=risk]', el).value;
+      if (!risk) { toast('Najpierw wybierz poziom ryzyka', true); return; }
+      const days = (App.meta.settings.sla_days || {})[risk];
+      if (!days) { toast('Brak SLA dla tego poziomu — ustaw w Ustawieniach', true); return; }
+      const d = new Date(App.meta.today); d.setDate(d.getDate() + +days);
+      $('#assess [name=deadline]', el).value = d.toISOString().slice(0, 10);
+      toast(`Termin: +${days} dni (SLA dla „${RISK[risk]}”) — zapisz CVE`);
+    },
+    kevdue: () => { $('#assess [name=deadline]', el).value = k.dueDate; },
     addrule: () => { st.rules.push({ product: '', product_id: null, unlisted: 'review', branches: [] }); drawRules(); },
     delrule: (b) => { st.rules.splice(+b.dataset.r, 1); drawRules(); },
     addbr: (b) => { st.rules[+b.dataset.r].branches.push({ branch: '', fixed: '', state: 'fix', introduced: '', note: '' }); drawRules(); },

@@ -5,11 +5,12 @@ from __future__ import annotations
 
 import base64
 import csv
+import fnmatch
 import hashlib
 import io
 import re
 import secrets
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from datetime import date, datetime
 
 from . import engine as E
@@ -20,8 +21,11 @@ FIELDS = [
     ("ignore", "— pomiń —"),
     ("hostname", "Host / nazwa"),
     ("ip", "Adres IP"),
+    ("company", "Spółka"),
+    ("team", "Zespół / realizator"),
     ("host_type", "Typ urządzenia"),
     ("os", "System operacyjny"),
+    ("os_version", "Wersja / build systemu"),
     ("environment", "Środowisko"),
     ("criticality", "Krytyczność"),
     ("exposure", "Ekspozycja (Internet / DMZ / wewn.)"),
@@ -37,9 +41,9 @@ FIELDS = [
     ("notes", "Uwagi"),
 ]
 FIELD_IDS = {f for f, _ in FIELDS}
-HOST_ATTRS = {"ip": "ip", "host_type": "type", "os": "os", "environment": "environment",
-              "criticality": "criticality", "exposure": "exposure", "location": "location", "owner": "owner", "admin": "admin",
-              "user": "user"}
+HOST_ATTRS = {"ip": "ip", "host_type": "type", "os": "os", "os_version": "os_version", "environment": "environment",
+              "criticality": "criticality", "exposure": "exposure", "location": "location", "owner": "owner",
+              "admin": "admin", "user": "user", "company": "company", "team": "team"}
 
 SYN = {
     "hostname": ["host", "hostname", "nazwahosta", "serwer", "server", "maszyna", "komputer", "computer",
@@ -47,9 +51,16 @@ SYN = {
                  "zasob", "fqdn", "dnsname", "netbios", "nodename", "nazwaserwera", "servername", "hostnazwa"],
     "ip": ["ip", "adresip", "ipaddress", "address", "adres", "ipv4", "mgmtip", "ipadres"],
     "host_type": ["typ", "type", "rodzaj", "typhosta", "typurzadzenia", "devicetype", "assettype", "klasa",
-                  "rodzajurzadzenia", "kategoriaurzadzenia"],
-    "os": ["os", "system", "systemoperacyjny", "operatingsystem", "platform", "platforma", "osversion",
-           "wersjasystemu", "osname"],
+                  "rodzajurzadzenia", "kategoriaurzadzenia", "assettypename", "typzasobu", "category", "kategoria"],
+    "os": ["os", "system", "systemoperacyjny", "operatingsystem", "platform", "platforma", "osname", "ostype",
+           "nazwasystemu"],
+    "os_version": ["osversion", "osbuild", "build", "wersjasystemu", "osrelease", "kernel", "kernelversion",
+                   "firmware", "firmwareversion", "wersjafirmware", "oprogramowaniesprzetowe", "versionos",
+                   "buildsystemu", "osbuildnumber"],
+    "company": ["spolka", "company", "firma", "podmiot", "organizacja", "organization", "organisation", "tenant",
+                "companyname", "nazwaspolki", "spolkagrupy", "entity", "legalentity", "jednostka"],
+    "team": ["zespol", "team", "realizator", "resolvergroup", "assignmentgroup", "supportgroup", "grupawsparcia",
+             "zespolodpowiedzialny", "odpowiedzialnyzespol", "zespolrealizujacy", "patchteam"],
     "environment": ["srodowisko", "environment", "env", "stage"],
     "criticality": ["krytycznosc", "criticality", "waga", "istotnosc", "assetcriticality", "klasyfikacja"],
     "exposure": ["ekspozycja", "exposure", "wystawiony", "wystawionynazewnatrz", "internetfacing", "publiczny",
@@ -57,12 +68,12 @@ SYN = {
     "location": ["lokalizacja", "location", "site", "datacenter", "serwerownia", "oddzial", "lokacja"],
     "owner": ["wlasciciel", "owner", "odpowiedzialny", "responsible", "businessowner", "wlascicielbiznesowy",
               "opiekun", "osobaodpowiedzialna", "kontakt", "contact", "assetowner", "wlascicielaplikacji"],
-    "admin": ["administrator", "admin", "technicalowner", "opiekuntechniczny", "adminsystemu", "zespol", "team",
-              "supportgroup", "assignmentgroup", "grupawsparcia"],
+    "admin": ["administrator", "admin", "technicalowner", "opiekuntechniczny", "adminsystemu"],
     "user": ["uzytkownik", "user", "username", "login", "lastuser", "lastloggeduser", "ostatniuzytkownik"],
     "product": ["aplikacja", "application", "app", "software", "produkt", "product", "program", "oprogramowanie",
-                "komponent", "component", "pakiet", "package", "nazwaaplikacji", "softwarename", "usluga"],
-    "vendor": ["producent", "vendor", "dostawca", "manufacturer", "publisher", "wydawca"],
+                "komponent", "component", "pakiet", "package", "nazwaaplikacji", "softwarename", "usluga",
+                "displayname", "nazwaoprogramowania"],
+    "vendor": ["producent", "vendor", "dostawca", "manufacturer", "publisher", "wydawca", "softwarepublisher"],
     "version": ["wersja", "version", "wersjazainstalowana", "installedversion", "currentversion",
                 "aktualnawersja", "ver", "wersjaaplikacji", "softwareversion", "zainstalowana"],
     "cve": ["cve", "cveid", "cves", "podatnosc", "podatnosci", "vulnerability", "vulnid", "identyfikatorcve"],
@@ -298,6 +309,59 @@ def normalize_exposure(v) -> str:
     return "unknown"
 
 
+# ---------------------------------------------------------------- normalizacja nazw aplikacji
+_ARCH = re.compile(r"\s*[\(\[][^\)\]]*(x64|x86|amd64|arm64|64[- ]?bit|32[- ]?bit|\b[a-z]{2}-[a-z]{2}\b|"
+                   r"x86_64|i386|i686|win64|win32)[^\)\]]*[\)\]]", re.I)
+_TRAIL_DASH_VER = re.compile(r"\s+[-–]\s+v?\d+(\.\d+)+\S*\s*$")
+_TRAIL_VER = re.compile(r"[\s_-]+v?\d+(\.\d+)*[a-z]?\s*$", re.I)
+_TRAIL_WORDS = re.compile(r"[\s,]+(x64|x86|64-bit|32-bit|edition)\s*$", re.I)
+
+
+def normalize_product_name(name: str) -> str:
+    """'PostgreSQL 14' -> 'PostgreSQL', '7-Zip 23.01 (x64)' -> '7-Zip', 'Mozilla Firefox (x64 en-US)' -> 'Mozilla Firefox'."""
+    n = re.sub(r"\s+", " ", str(name or "")).strip()
+    if not n:
+        return n
+    prev = None
+    while prev != n:
+        prev = n
+        n = _ARCH.sub("", n).strip()
+        n = _TRAIL_DASH_VER.sub("", n).strip()
+        n = _TRAIL_WORDS.sub("", n).strip()
+        m = _TRAIL_VER.search(n)
+        if m and len(n[: m.start()].strip()) >= 3:
+            n = n[: m.start()].strip()
+    return n.strip(" -–,") or str(name).strip()
+
+
+_WIN_CLIENT = re.compile(r"^(microsoft\s+)?win(dows)?\s*(10|11|8\.1|7)\b", re.I)
+_WIN_SERVER = re.compile(r"^(microsoft\s+)?win(dows)?\s*(server)?\s*(20(0[38]|1[2296]|2[2-5]))(\s*r2)?", re.I)
+_OS_VER = re.compile(r"^(.*?)[\s_-]+v?(\d+(?:\.\d+)*)(?:\s+(lts|sp\d+))?\s*$", re.I)
+
+
+def os_to_product(os_name: str, os_version: str = ""):
+    """System operacyjny jako „aplikacja” do oceny CVE: (nazwa produktu, wersja)."""
+    o = re.sub(r"\s+", " ", str(os_name or "")).strip()
+    if not o:
+        return None, None
+    ver = str(os_version or "").strip()
+    m = _WIN_SERVER.match(o)
+    if m:
+        return f"Windows Server {m.group(4)}{' R2' if m.group(6) else ''}", ver
+    m = _WIN_CLIENT.match(o)
+    if m:
+        return f"Windows {m.group(3)}", ver
+    m = _OS_VER.match(o)
+    if m and len(m.group(1).strip()) >= 3:
+        return m.group(1).strip(), ver or m.group(2)
+    return o, ver
+
+
+def compile_ignore(patterns: str):
+    pats = [p.strip().lower() for p in str(patterns or "").split(",") if p.strip()]
+    return lambda name: any(fnmatch.fnmatchcase(name.lower(), p) for p in pats)
+
+
 # ---------------------------------------------------------------- zastosowanie
 def new_id(prefix):
     return f"{prefix}_{secrets.token_hex(5)}"
@@ -328,9 +392,21 @@ def product_index(db):
     idx = {}
     for p in db["products"].values():
         for n in [p["name"]] + list(p.get("aliases") or []):
+            if "*" in n or "?" in n:
+                continue
             if E.norm(n):
                 idx.setdefault(E.norm(n), p["id"])
     return idx
+
+
+def wildcard_aliases(db):
+    """Aliasy z * / ? (np. „Mozilla Firefox*”) — dopasowanie po oryginalnej nazwie z importu."""
+    out = []
+    for p in db["products"].values():
+        for a in p.get("aliases") or []:
+            if "*" in a or "?" in a:
+                out.append((a.strip().lower(), p["id"]))
+    return out
 
 
 def apply_import(db, records, name, opts=None):
@@ -359,8 +435,9 @@ def apply_import(db, records, name, opts=None):
             h = dict(old)
             if opts.get("update_hosts", True):
                 for f, attr in HOST_ATTRS.items():
-                    if rec.get(f) and rec[f] != old.get(attr):
-                        h[attr] = rec[f]
+                    val = team_id(rec[f]) if f == "team" and rec.get(f) else rec.get(f)
+                    if val and val != old.get(attr):
+                        h[attr] = val
                 if hn and not old.get("hostname"):
                     h["hostname"] = hn
             if h != old:
@@ -372,7 +449,7 @@ def apply_import(db, records, name, opts=None):
         hid = new_id("h")
         h = {"id": hid, "hostname": hn or ip, "notes": "", "mitigations": [], "created_at": ts, "updated_at": ts}
         for f, attr in HOST_ATTRS.items():
-            h[attr] = rec.get(f, "")
+            h[attr] = team_id(rec[f]) if f == "team" and rec.get(f) else rec.get(f, "")
         db["hosts"][hid] = h
         by_name[h["hostname"].lower()] = hid
         by_short.setdefault(h["hostname"].lower().split(".")[0], hid)
@@ -381,11 +458,55 @@ def apply_import(db, records, name, opts=None):
         new_hosts.append(h["hostname"])
         return hid
 
+    settings = db.get("settings", {})
+    ignored = compile_ignore(opts.get("ignore", settings.get("import_ignore", "")))
+    normalize = opts.get("normalize", settings.get("import_normalize", True))
+    unknown_mode = opts.get("unknown", "create")          # create | skip
+    os_as_app = opts.get("os_as_app", settings.get("import_os_as_app", True))
+    wild = wildcard_aliases(db)
+    ignored_names, unknown_names, renamed = defaultdict(int), defaultdict(int), {}
+    new_pids = {}
+    team_ids = {E.norm(t["id"]): t["id"] for t in settings.get("teams", [])}
+    team_ids.update({E.norm(t["name"]): t["id"] for t in settings.get("teams", [])})
+    new_teams = []
+
+    def team_id(v):
+        n = E.norm(v)
+        if not n:
+            return ""
+        if n not in team_ids:
+            tid = n[:40]
+            settings_teams = db["settings"].setdefault("teams", [])
+            if not any(t["id"] == tid for t in settings_teams):
+                db["settings"] = dict(db["settings"], teams=list(settings_teams) + [{"id": tid, "name": v.strip(),
+                                                                                     "description": "z importu"}])
+                new_teams.append(v.strip())
+            team_ids[n] = tid
+        return team_ids[n]
+
+    def find_pid(raw, name):
+        pid = pidx.get(E.norm(raw)) or pidx.get(E.norm(name))
+        if not pid and wild:
+            low = raw.lower()
+            pid = next((p for a, p in wild if fnmatch.fnmatchcase(low, a)), None)
+        return pid
+
     def get_product(rec):
-        pn = (rec.get("product") or "").strip()
-        if not pn:
+        raw = (rec.get("product") or "").strip()
+        if not raw:
             return None
-        pid = pidx.get(E.norm(pn))
+        if ignored(raw):
+            ignored_names[raw] += 1
+            rec["_skip"] = "na liście ignorowanych"
+            return None
+        pn = normalize_product_name(raw) if normalize else raw
+        if pn != raw:
+            renamed[raw] = pn
+        pid = find_pid(raw, pn)
+        if not pid and unknown_mode == "skip":
+            unknown_names[pn] += 1
+            rec["_skip"] = "brak w rejestrze aplikacji"
+            return None
         if pid:
             p = db["products"][pid]
             if p.get("status") != "used" and opts.get("mark_used", True):
@@ -400,11 +521,14 @@ def apply_import(db, records, name, opts=None):
             return pid
         pid = new_id("p")
         db["products"][pid] = {"id": pid, "name": pn, "vendor": rec.get("vendor", ""), "aliases": [],
-                               "category": "", "status": "used", "notes": "", "verified_at": ts[:10],
-                               "created_at": ts}
+                               "category": rec.get("_category", ""), "status": "used", "notes": "",
+                               "verified_at": ts[:10], "created_at": ts}
         pidx[E.norm(pn)] = pid
         new_products.append(pn)
+        new_pids[pid] = pn
         return pid
+
+    os_done = set()
 
     def add_rule(cid, pid, fixed):
         branch = V.derive_branch(fixed)
@@ -430,28 +554,31 @@ def apply_import(db, records, name, opts=None):
         db["cves"][cid] = cve
         rules_added.append(f"{cid}: {db['products'][pid]['name']} {branch} → {fixed}")
 
+    pairs = {}          # (hid, pid) -> [{"v": wersja, "c": [cve], "rec": wiersz}]
+
+    def add_obs(hid, pid, ver, cves, rec):
+        pairs.setdefault((hid, pid), []).append({"v": (ver or "").strip(), "c": list(cves or []), "rec": rec})
+
     for rec in records:
         hid = get_host(rec)
+        if os_as_app and hid and rec.get("os") and hid not in os_done:
+            os_done.add(hid)
+            oname, over = os_to_product(rec["os"], rec.get("os_version", ""))
+            if oname and not ignored(oname):
+                orec = {"product": oname, "version": over, "_category": "system", "_row": rec["_row"]}
+                saved = normalize
+                normalize = False
+                opid = get_product(orec)
+                normalize = saved
+                if opid:
+                    add_obs(hid, opid, over, [], None)
         pid = get_product(rec)
         cves = rec.get("cve") or []
         if pid and cves and rec.get("fixed_version"):
             for cid in cves:
                 add_rule(cid, pid, rec["fixed_version"])
         if hid and pid:
-            k = E.inv_key(hid, pid)
-            o = obs.get(k)
-            if o is None:
-                o = obs[k] = {"h": hid, "p": pid, "v": rec.get("version", ""), "c": []}
-            elif rec.get("version") and o["v"] and rec["version"] != o["v"]:
-                warnings.append(f"Wiersz {rec['_row']}: {db['hosts'][hid]['hostname']} / "
-                                f"{db['products'][pid]['name']} ma dwie wersje ({o['v']} i {rec['version']}) — "
-                                f"użyto pierwszej")
-            elif rec.get("version") and not o["v"]:
-                o["v"] = rec["version"]
-            for c in cves:
-                if c not in o["c"]:
-                    o["c"].append(c)
-            row_refs.append((rec, k))
+            add_obs(hid, pid, rec.get("version", ""), cves, rec)
         elif hid:
             row_refs.append((rec, None))
         elif pid and cves and rec.get("fixed_version"):
@@ -459,16 +586,57 @@ def apply_import(db, records, name, opts=None):
         else:
             skipped.append(rec["_row"])
 
+    # jedna instalacja na (host, aplikacja); kilka gałęzi naraz (np. PostgreSQL 14 i 16) = osobne instalacje
+    def major(v):
+        n = V.numeric_prefix(v)
+        return str(n[0]) if n else ""
+
+    def lowest(items):
+        vs = [i["v"] for i in items if i["v"]]
+        if not vs:
+            return ""
+        return sorted(vs, key=V.sort_key())[0]
+
+    for (hid, pid), items in pairs.items():
+        majors = OrderedDict()
+        for it in items:
+            majors.setdefault(major(it["v"]), []).append(it)
+        if len([m for m in majors if m]) > 1:
+            groups = [(f"{E.inv_key(hid, pid)}|{m or '?'}", grp) for m, grp in majors.items()]
+        else:
+            groups = [(E.inv_key(hid, pid), items)]
+        for k, grp in groups:
+            vers = {i["v"] for i in grp if i["v"]}
+            v = lowest(grp)
+            if len(vers) > 1:
+                warnings.append(f"{db['hosts'][hid]['hostname']} / {db['products'][pid]['name']}: kilka wersji "
+                                f"({', '.join(sorted(vers, key=V.sort_key()))}) — do oceny przyjęto najniższą {v}")
+            cs = []
+            for i in grp:
+                cs += [c for c in i["c"] if c not in cs]
+            obs[k] = {"k": k, "h": hid, "p": pid, "v": v, "c": cs}
+            for i in grp:
+                if i["rec"] is not None:
+                    row_refs.append((i["rec"], k))
+
     # inwentarz
     hosts_in_import = set()
+    existing = defaultdict(list)
+    for k, inst in db["inventory"].items():
+        existing[(inst["host_id"], inst["product_id"])].append(k)
     for k, o in obs.items():
         hosts_in_import.add(o["h"])
         old = db["inventory"].get(k)
         hist = list((old or {}).get("history", []))
-        hist.append({"import_id": imp_id, "version": o["v"], "date": ts[:10]})
-        db["inventory"][k] = {"host_id": o["h"], "product_id": o["p"], "version": o["v"],
+        if not hist or hist[-1].get("version") != o["v"]:
+            hist.append({"import_id": imp_id, "version": o["v"], "date": ts[:10]})
+        db["inventory"][k] = {"key": k, "host_id": o["h"], "product_id": o["p"], "version": o["v"],
                               "reported_cves": o["c"], "first_seen": (old or {}).get("first_seen", ts),
-                              "last_seen": ts, "import_id": imp_id, "removed": False, "history": hist[-20:]}
+                              "last_seen": ts, "import_id": imp_id, "removed": False, "history": hist[-6:]}
+        # import jest wiążący dla pary host+aplikacja: inne „gałęzie” z poprzednich importów znikają
+        for ok in existing.get((o["h"], o["p"]), []):
+            if ok not in obs and not db["inventory"][ok].get("removed"):
+                db["inventory"][ok] = dict(db["inventory"][ok], removed=True, removed_at=ts)
     removed = 0
     if opts.get("replace_scope"):
         for k, inst in list(db["inventory"].items()):
@@ -494,7 +662,10 @@ def apply_import(db, records, name, opts=None):
         if k == "rule":
             r.update(status="rule", reason="Reguła wersji CVE (bez hosta)")
         elif k is None:
-            r.update(status="host", reason="Tylko dane hosta")
+            if rec.get("_skip"):
+                r.update(status="skip", reason=f"Aplikacja pominięta — {rec['_skip']} (dane hosta zaktualizowane)")
+            else:
+                r.update(status="host", reason="Tylko dane hosta")
         else:
             fs, s = inst_eval[k]
             mine = [f for f in fs if not rec.get("cve") or f["cve"] in rec["cve"]]
@@ -506,12 +677,23 @@ def apply_import(db, records, name, opts=None):
     counts = defaultdict(int)
     for k, (fs, s) in inst_eval.items():
         counts[s["status"]] += 1
+    per_new = defaultdict(int)
+    for o in obs.values():
+        if o["p"] in new_pids:
+            per_new[o["p"]] += 1
+    top = lambda d, n=150: [{"name": k, "count": v} for k, v in sorted(d.items(), key=lambda x: -x[1])[:n]]  # noqa: E731
     return {
         "import_id": imp_id,
         "stats": {"records": len(records), "installations": len(obs), "hosts": len(hosts_in_import),
                   "new_hosts": len(new_hosts), "new_products": len(new_products), "rules_added": len(rules_added),
                   "skipped": len(skipped), "removed": removed, "by_status": dict(counts)},
         "new_hosts": new_hosts[:200], "new_products": new_products[:200], "rules_added": rules_added[:200],
+        "new_products_counts": sorted(({"name": new_pids[p], "count": c} for p, c in per_new.items()),
+                                      key=lambda x: -x["count"])[:300],
+        "ignored": top(ignored_names), "ignored_total": sum(ignored_names.values()),
+        "unknown_skipped": top(unknown_names, 300), "unknown_total": sum(unknown_names.values()),
+        "renamed": [{"from": a, "to": b} for a, b in list(renamed.items())[:60]], "renamed_total": len(renamed),
+        "new_teams": new_teams,
         "conflicts": conflicts[:100], "warnings": warnings[:100],
         "skipped_rows": skipped[:50], "rows": rows_out[:2000], "rows_total": len(rows_out),
     }

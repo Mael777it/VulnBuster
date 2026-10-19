@@ -12,8 +12,9 @@ async function viewImport(el) {
   <div class="panel" id="step1">
     <h2>1. Dane</h2>
     <textarea class="paste" id="paste" placeholder="Zaznacz w Excelu zakres z nagłówkami → Ctrl+C → tutaj Ctrl+V
-Przykład kolumn: Host | IP | System | Typ | Ekspozycja | Aplikacja | Wersja | Właściciel | Administrator
-lub reguły CVE:  CVE | Aplikacja | Wersja naprawiona"></textarea>
+Przykład (Lansweeper): AssetName | AssetTypename | IPAddress | OS | OSVersion | Software | softwareVersion | SoftwarePublisher | Spółka
+CMDB (bez aplikacji): Host | IP | Spółka | Zespół | Właściciel | Ekspozycja | Środowisko
+Reguły CVE: CVE | Aplikacja | Wersja naprawiona"></textarea>
     <div class="row mt8">
       <label class="btn">Wybierz plik<input type="file" id="file" accept=".xlsx,.xlsm,.csv,.txt,.tsv" class="hidden"></label>
       <span id="fname" class="small muted"></span><select id="sheet" class="hidden"></select>
@@ -22,10 +23,18 @@ lub reguły CVE:  CVE | Aplikacja | Wersja naprawiona"></textarea>
       <label class="row small" title="Aplikacje hostów z importu, których nie ma w tym imporcie, zostaną oznaczone jako odinstalowane"><input type="checkbox" id="o-scope"> import zawiera pełną listę aplikacji tych hostów</label>
       <button class="btn primary w" data-act="analyze">Analizuj</button>
     </div>
+    <div class="row mt8 small">
+      <label class="row">nieznane aplikacje: <select id="o-unk">${options([['create', 'dodawaj do rejestru'], ['skip', 'pomijaj (tylko aplikacje z rejestru)']], 'create')}</select></label>
+      <label class="row" title="„PostgreSQL 14” → „PostgreSQL”, „7-Zip 23.01 (x64)” → „7-Zip”"><input type="checkbox" id="o-norm"${App.meta.settings.import_normalize !== false ? ' checked' : ''}> upraszczaj nazwy aplikacji</label>
+      <label class="row" title="Tworzy instalację „Windows Server 2019”, „Cisco IOS XE” itd. z kolumny systemu — potrzebne do oceny CVE systemów"><input type="checkbox" id="o-os"${App.meta.settings.import_os_as_app !== false ? ' checked' : ''}> system operacyjny jako aplikacja</label>
+      <a class="small" href="#/settings">lista ignorowanych aplikacji →</a>
+    </div>
   </div>
   <div id="step2"></div>`;
 
-  const opts = () => ({ update_hosts: $('#o-upd', el).checked, replace_scope: $('#o-scope', el).checked });
+  const opts = () => ({ update_hosts: $('#o-upd', el).checked, replace_scope: $('#o-scope', el).checked,
+    unknown: $('#o-unk', el).value, normalize: $('#o-norm', el).checked, os_as_app: $('#o-os', el).checked });
+  ['#o-upd', '#o-scope', '#o-unk', '#o-norm', '#o-os'].forEach((x) => $(x, el).addEventListener('change', () => { if (S.token) repreview(); }));
   $('#file', el).addEventListener('change', async (e) => {
     const f = e.target.files[0]; if (!f) return;
     S.file = f; $('#fname', el).textContent = f.name;
@@ -52,6 +61,13 @@ lub reguły CVE:  CVE | Aplikacja | Wersja naprawiona"></textarea>
     }
     S.token = a.token; S.analysis = a; S.mapping = a.columns.map((c) => c.field); S.split = a.split_product_version; S.preview = a.preview;
     drawStep2();
+    if (a.profile_options) {         // ustawienia zapamiętane razem z mapowaniem tego układu kolumn
+      const po = a.profile_options;
+      $('#o-upd', el).checked = po.update_hosts !== false; $('#o-scope', el).checked = !!po.replace_scope;
+      $('#o-unk', el).value = po.unknown || 'create'; $('#o-norm', el).checked = po.normalize !== false; $('#o-os', el).checked = po.os_as_app !== false;
+      if (a.profile_split !== undefined) S.split = !!a.profile_split;
+      repreview();
+    }
   }
 
   async function repreview() {
@@ -80,7 +96,8 @@ lub reguły CVE:  CVE | Aplikacja | Wersja naprawiona"></textarea>
   function drawPreview() {
     const p = S.preview, s = p.stats;
     const bs = s.by_status || {};
-    const filters = [['all', 'Wszystkie'], ['action', 'Wymagają działań'], ['vulnerable', 'Podatne'], ['review', 'Do weryfikacji'], ['ok', 'OK']];
+    const filters = [['all', 'Wszystkie'], ['action', 'Wymagają działań'], ['vulnerable', 'Podatne'], ['review', 'Do weryfikacji'], ['ok', 'OK'], ['skipped', 'Pominięte']];
+    const defFlt = p.rows.some((r) => ['vulnerable', 'review'].includes(r.status)) ? 'action' : 'all';
     $('#prev', el).innerHTML = `
     <div class="panel"><h2>3. Podgląd i ocena — nic jeszcze nie zapisano</h2>
       <div class="tiles">
@@ -93,16 +110,27 @@ lub reguły CVE:  CVE | Aplikacja | Wersja naprawiona"></textarea>
         <div class="tile ${s.new_products ? 'amber' : ''}"><div class="v">${s.new_products}</div><div class="l">nowych aplikacji</div></div>
         <div class="tile"><div class="v">${s.rules_added}</div><div class="l">nowych reguł CVE</div></div>
       </div>
-      ${p.new_products.length ? `<div class="callout">Nowe aplikacje (nie ma ich w rejestrze): <b>${esc(p.new_products.join(', '))}</b>.
-        Jeśli to inna nazwa istniejącej aplikacji — dodaj alias w jej karcie albo scal po imporcie.</div>` : ''}
+      ${(p.new_products_counts || []).length ? `<details class="callout"><summary>Nowe aplikacje — trafią do rejestru jako „używamy” (${p.new_products_counts.length})</summary>
+        <div class="namecols mt8">${p.new_products_counts.map((x) => `<span>${esc(x.name)} <span class="faint">· ${x.count}</span></span>`).join('')}</div>
+        <div class="small muted mt8">Jeśli to inna nazwa istniejącej aplikacji — dodaj alias w jej karcie (można z * , np. „Mozilla Firefox*”) albo scal po imporcie.
+        Śmieci (aktualizacje KB, pakiety językowe) dodaj do listy ignorowanych w Ustawieniach.</div></details>` : ''}
+      ${p.unknown_total ? `<details class="callout info"><summary>Pominięte — brak w rejestrze aplikacji (${p.unknown_total} wierszy, ${p.unknown_skipped.length} nazw)</summary>
+        <div class="namecols mt8">${p.unknown_skipped.map((x) => `<span>${esc(x.name)} <span class="faint">· ${x.count}</span></span>`).join('')}</div></details>` : ''}
+      ${p.ignored_total ? `<details class="callout info"><summary>Pominięte wg listy ignorowanych (${p.ignored_total} wierszy)</summary>
+        <div class="namecols mt8">${p.ignored.map((x) => `<span>${esc(x.name)} <span class="faint">· ${x.count}</span></span>`).join('')}</div></details>` : ''}
+      ${p.renamed_total ? `<details class="callout info"><summary>Uproszczone nazwy aplikacji (${p.renamed_total})</summary>
+        <div class="small mt8">${p.renamed.map((x) => `${esc(x.from)} → <b>${esc(x.to)}</b>`).join('<br>')}</div></details>` : ''}
+      ${(p.new_teams || []).length ? `<div class="callout">Nowe zespoły z kolumny „Zespół”: <b>${esc(p.new_teams.join(', '))}</b> — uzupełnij ich adresy e-mail w Ustawieniach.</div>` : ''}
       ${p.rules_added.length ? `<details><summary class="small">Reguły CVE z importu (${p.rules_added.length})</summary><div class="small mono">${p.rules_added.map(esc).join('<br>')}</div></details>` : ''}
       ${p.conflicts.length ? `<div class="callout bad"><b>Konflikty reguł:</b><br>${p.conflicts.map(esc).join('<br>')}</div>` : ''}
-      ${p.warnings.length ? `<div class="callout">${p.warnings.map(esc).join('<br>')}</div>` : ''}
+      ${p.warnings.length ? (p.warnings.length > 4
+        ? `<details class="callout"><summary>Uwagi do danych (${p.warnings.length}${p.warnings.length >= 100 ? '+' : ''})</summary><div class="small mt8">${p.warnings.map(esc).join('<br>')}</div></details>`
+        : `<div class="callout">${p.warnings.map(esc).join('<br>')}</div>`) : ''}
       ${s.skipped ? `<div class="callout">Pominięto ${s.skipped} wierszy bez hosta i aplikacji (wiersze: ${esc(p.skipped_rows.join(', '))}).</div>` : ''}
       ${s.removed ? `<div class="callout info">${s.removed} aplikacji zostanie oznaczonych jako odinstalowane.</div>` : ''}
-      <div class="row mb8 mt8"><div class="seg" id="pf">${filters.map(([k, l], i) => `<button data-v="${k}" class="${i === 0 ? 'on' : ''}">${l}</button>`).join('')}</div>
-        <span class="small muted">${p.rows_total > p.rows.length ? `pokazano ${p.rows.length} z ${p.rows_total}` : ''}</span></div>
-      <div class="tbl-wrap" id="prows"></div>
+      <div class="row mb8 mt8"><div class="seg" id="pf">${filters.map(([k, l]) => `<button data-v="${k}" class="${k === defFlt ? 'on' : ''}">${l}</button>`).join('')}</div>
+        <span class="small muted" id="pcount"></span></div>
+      <div class="tbl-wrap tbl-scroll" id="prows"></div>
       <div class="row end mt8">
         <input type="text" id="impname" placeholder="Nazwa importu, np. „Inwentarz PostgreSQL — po oknie 10.2026”" size="48">
         <label class="row small"><input type="checkbox" id="saveprof" checked> zapamiętaj mapowanie</label>
@@ -110,13 +138,15 @@ lub reguły CVE:  CVE | Aplikacja | Wersja naprawiona"></textarea>
     </div>`;
     const drawRows = (flt) => {
       const okS = ['fixed', 'not_affected', 'none', 'mitigated', 'exception', 'host', 'rule'];
-      const rows = p.rows.filter((r) => flt === 'all' || (flt === 'action' ? ['vulnerable', 'review'].includes(r.status) : flt === 'ok' ? okS.includes(r.status) : r.status === flt));
+      if (flt === 'all') flt = 'nonskip';
+      const rows = p.rows.filter((r) => (flt === 'nonskip' ? r.status !== 'skip' : flt === 'skipped' ? r.status === 'skip' : false) || (flt === 'action' ? ['vulnerable', 'review'].includes(r.status) : flt === 'ok' ? okS.includes(r.status) : r.status === flt));
       $('#prows', el).innerHTML = `<table><thead><tr><th>Wiersz</th><th>Host</th><th>Aplikacja</th><th>Wersja</th><th>CVE</th><th>Status</th><th>Docelowa</th><th>Uzasadnienie</th></tr></thead><tbody>
-        ${rows.slice(0, 500).map((r) => `<tr><td class="faint">${r.row}</td><td>${esc(r.hostname)}</td><td>${esc(r.product)}</td><td class="mono">${esc(r.version)}</td>
+        ${rows.slice(0, 300).map((r) => `<tr><td class="faint">${r.row}</td><td>${esc(r.hostname)}</td><td>${esc(r.product)}</td><td class="mono">${esc(r.version)}</td>
           <td class="mono small">${esc(r.cve)}</td><td>${badge(r.status)}</td><td class="mono">${esc(r.target || '')}</td><td class="small">${esc(r.reason)}</td></tr>`).join('') || '<tr><td colspan="8" class="empty">—</td></tr>'}
       </tbody></table>`;
+      $('#pcount', el).textContent = `${Math.min(rows.length, 300)} z ${rows.length}${p.rows_total > p.rows.length ? ' (podgląd obejmuje pierwsze ' + p.rows.length + ' z ' + p.rows_total + ' wierszy)' : ''}`;
     };
-    drawRows('all');
+    drawRows(defFlt);
     $('#pf', el).addEventListener('click', (e) => {
       const b = e.target.closest('button'); if (!b) return;
       $$('#pf button', el).forEach((x) => x.classList.toggle('on', x === b)); drawRows(b.dataset.v);
@@ -153,7 +183,7 @@ async function viewImports(el) {
   <div class="page-head"><div><h1>Historia importów</h1></div><div class="actions"><a class="btn" href="#/compare">Porównaj</a><a class="btn primary" href="#/import">Nowy import</a></div></div>
   <div class="panel tight"><div class="tbl-wrap"><table><thead><tr><th>Nazwa</th><th>Data</th><th>Kto</th><th class="num">Wiersze</th><th class="num">Instalacje</th><th class="num">Nowe hosty</th><th class="num">Nowe aplikacje</th><th></th></tr></thead><tbody>
   ${r.imports.map((i, n) => `<tr><td><input type="text" value="${esc(i.name)}" data-id="${esc(i.id)}" size="40"></td><td class="small">${esc(fmtDT(i.created_at))}</td><td class="small">${esc(i.created_by || '')}</td>
-    <td class="num">${i.rows}</td><td class="num">${i.installations}</td><td class="num">${i.new_hosts}</td><td class="num">${i.new_products}</td>
+    <td class="num">${i.rows}</td><td class="num">${i.installations}${i.archived ? ' <span class="b gray" title="szczegóły usunięte wg limitu historii">archiwum</span>' : ''}</td><td class="num">${i.new_hosts}</td><td class="num">${i.new_products}</td>
     <td class="nowrap"><button class="btn sm w" data-act="ren" data-id="${esc(i.id)}">Zmień nazwę</button>
       ${r.imports[n + 1] ? `<a class="btn sm" href="#/compare?a=${enc(r.imports[n + 1].id)}&b=${enc(i.id)}">vs poprzedni</a>` : ''}</td></tr>`).join('') || '<tr><td colspan="8" class="empty">Brak importów</td></tr>'}
   </tbody></table></div></div>`;
@@ -163,7 +193,7 @@ async function viewImports(el) {
 }
 
 async function viewCompare(el, _, q) {
-  const imps = (await GET('/api/imports')).imports;
+  const imps = (await GET('/api/imports')).imports.filter((i) => !i.archived);
   if (imps.length < 2) { el.innerHTML = '<div class="panel empty">Do porównania potrzebne są co najmniej dwa importy. Zaimportuj stan przed i po oknie serwisowym.</div>'; return; }
   const a = q.a || imps[1].id, b = q.b || imps[0].id;
   const opt = imps.map((i) => [i.id, `${i.name} (${fmtDT(i.created_at)})`]);
@@ -179,29 +209,55 @@ async function viewCompare(el, _, q) {
     patched: ['Załatane', 'green'], still: ['Nadal podatne', 'red'], worse: ['Nowe podatności (pogorszenie)', 'red'], new_vuln: ['Nowe wpisy podatne', 'amber'],
     missing: ['Brak w nowym imporcie', 'gray'], new_ok: ['Nowe wpisy OK', 'gray'], ok: ['Bez zmian, OK', 'gray'],
   };
-  const total = r.rows.length;
-  const done = (r.counts.patched || 0);
-  const needed = done + (r.counts.still || 0) + (r.counts.worse || 0);
+  const uniq = (k) => [...new Set(r.rows.map((x) => x[k]).filter(Boolean))].sort((x, y) => x.localeCompare(y, 'pl'));
   $('#cres', el).innerHTML = `
-  <div class="tiles">${Object.entries(C).map(([k, [l, cls]]) => `<a class="tile ${cls}" href="#" data-act="flt" data-v="${k}"><div class="v">${r.counts[k] || 0}</div><div class="l">${l}</div></a>`).join('')}</div>
-  <div class="panel"><h2>Skuteczność patchowania</h2>${progressBar(done, needed)}<p class="small muted mt8">Spośród instalacji podatnych w „przed” (${needed}) — załatane: ${done}. Łącznie porównano ${total} instalacji.</p></div>
-  <div class="panel tight"><div class="panel-head"><h2 id="ctitle">Wszystkie</h2><div class="row"><button class="btn sm" data-act="flt" data-v="">pokaż wszystkie</button><button class="btn sm" data-act="ccsv">CSV</button></div></div>
+  <div class="row mb12"><select id="cfc">${options(uniq('company').map((c) => [c, c]), '', 'Wszystkie spółki')}</select>
+    <select id="cft">${options(uniq('team').map((c) => [c, c]), '', 'Wszystkie zespoły')}</select>
+    <select id="cfp">${options(uniq('product').map((c) => [c, c]), '', 'Wszystkie aplikacje')}</select>
+    <label class="row small">podsumuj wg <select id="cby">${options([['company', 'spółki'], ['team', 'zespołu'], ['product', 'aplikacji']], 'company')}</select></label></div>
+  <div class="tiles" id="ctiles"></div>
+  <div class="grid g2">
+    <div class="panel"><h2>Skuteczność patchowania</h2><div id="ceff"></div></div>
+    <div class="panel tight"><div class="panel-head"><h2 id="cbyt">Wg spółek</h2></div><div class="tbl-wrap" id="cby-tbl"></div></div>
+  </div>
+  <div class="panel tight"><div class="panel-head"><h2 id="ctitle">Wszystkie</h2><div class="row"><button class="btn sm" data-act="flt" data-v="*">pokaż wszystkie</button><button class="btn sm" data-act="ccsv">CSV</button></div></div>
     <div class="tbl-wrap" id="crows"></div></div>`;
-  applyWidths(el);
   let cur = '';
+  let base = r.rows;
+  const stats = (rows) => {
+    const c = {};
+    rows.forEach((x) => { c[x.category] = (c[x.category] || 0) + 1; });
+    const done = c.patched || 0;
+    return { c, done, needed: done + (c.still || 0) + (c.worse || 0) };
+  };
   const draw = () => {
-    const rows = r.rows.filter((x) => !cur || x.category === cur);
-    $('#ctitle', el).textContent = cur ? C[cur][0] : 'Wszystkie';
-    $('#crows', el).innerHTML = `<table><thead><tr><th>Host</th><th>Aplikacja</th><th>Przed</th><th>Po</th><th>Wynik</th><th>Załatane CVE</th><th>Nadal otwarte</th><th>Docelowa</th><th>Właściciel</th></tr></thead><tbody>
-      ${rows.map((x) => `<tr><td>${hostLink(x.host_id, x.hostname)}</td><td>${esc(x.product)}</td><td class="mono">${esc(x.va ?? '—')}</td><td class="mono">${esc(x.vb ?? '—')}</td>
+    const fc = $('#cfc', el).value, ft = $('#cft', el).value, fp = $('#cfp', el).value, by = $('#cby', el).value;
+    base = r.rows.filter((x) => (!fc || x.company === fc) && (!ft || x.team === ft) && (!fp || x.product === fp));
+    const st = stats(base);
+    $('#ctiles', el).innerHTML = Object.entries(C).map(([k, [l, cls]]) => `<a class="tile ${cls}${cur === k ? ' sel' : ''}" href="#" data-act="flt" data-v="${k}"><div class="v">${st.c[k] || 0}</div><div class="l">${l}</div></a>`).join('');
+    $('#ceff', el).innerHTML = `${progressBar(st.done, st.needed)}<p class="small muted mt8">Spośród instalacji podatnych w „przed” (${st.needed}) — załatane: ${st.done}. Porównano ${base.length} instalacji.</p>`;
+    const groups = {};
+    base.forEach((x) => { const k = x[by] || '(nie przypisano)'; (groups[k] = groups[k] || []).push(x); });
+    $('#cbyt', el).textContent = { company: 'Wg spółek', team: 'Wg zespołów', product: 'Wg aplikacji' }[by];
+    $('#cby-tbl', el).innerHTML = `<table><thead><tr><th></th><th class="num">Załatane</th><th class="num">Nadal / gorzej</th><th>Skuteczność</th></tr></thead><tbody>
+      ${Object.entries(groups).map(([k, rows]) => [k, stats(rows)]).filter(([, s2]) => s2.needed).sort((x, y) => (x[1].done / x[1].needed) - (y[1].done / y[1].needed))
+        .map(([k, s2]) => `<tr><td>${esc(k)}</td><td class="num">${s2.done}</td><td class="num">${s2.needed - s2.done}</td><td>${progressBar(s2.done, s2.needed)}</td></tr>`).join('')
+        || '<tr><td colspan="4" class="empty">Brak instalacji podatnych w „przed”</td></tr>'}</tbody></table>`;
+    const rows = base.filter((x) => (cur === '*' || !cur ? (cur === '*' || !['ok', 'new_ok'].includes(x.category)) : x.category === cur));
+    $('#ctitle', el).textContent = cur === '*' ? 'Wszystkie' : cur ? C[cur][0] : 'Zmiany i podatne (bez pozycji „OK”)';
+    $('#crows', el).innerHTML = `<table><thead><tr><th>Host</th><th>Spółka</th><th>Zespół</th><th>Aplikacja</th><th>Przed</th><th>Po</th><th>Wynik</th><th>Załatane CVE</th><th>Nadal otwarte</th><th>Docelowa</th><th>Właściciel</th></tr></thead><tbody>
+      ${rows.slice(0, 500).map((x) => `<tr><td>${hostLink(x.host_id, x.hostname)}</td><td class="small">${esc(x.company || '')}</td><td class="small">${esc(x.team || '')}</td><td>${esc(x.product)}</td><td class="mono">${esc(x.va ?? '—')}</td><td class="mono">${esc(x.vb ?? '—')}</td>
         <td><span class="b ${C[x.category][1]}">${C[x.category][0]}</span></td><td class="mono small">${esc(x.fixed_cves.join(' '))}</td>
-        <td class="mono small">${esc(x.open_b.join(' '))}</td><td class="mono">${esc(x.target || '')}</td><td>${esc(x.owner)}</td></tr>`).join('') || '<tr><td colspan="9" class="empty">—</td></tr>'}</tbody></table>`;
+        <td class="mono small">${esc(x.open_b.join(' '))}</td><td class="mono">${esc(x.target || '')}</td><td>${esc(x.owner)}</td></tr>`).join('') || '<tr><td colspan="11" class="empty">—</td></tr>'}</tbody></table>
+      ${rows.length > 500 ? `<div class="small muted addrow">Pokazano 500 z ${rows.length} — pełna lista w CSV.</div>` : ''}`;
+    applyWidths(el);
   };
   draw();
+  ['#cfc', '#cft', '#cfp', '#cby'].forEach((x) => $(x, el).addEventListener('change', draw));
   onAct($('#cres', el), {
-    flt: (t) => { cur = t.dataset.v; draw(); },
-    ccsv: () => downloadCSV(`porownanie-${r.a.name}-vs-${r.b.name}.csv`, ['Host', 'Właściciel', 'Aplikacja', 'Wersja przed', 'Wersja po', 'Wynik', 'Załatane CVE', 'Nadal otwarte', 'Docelowa'],
-      r.rows.map((x) => [x.hostname, x.owner, x.product, x.va, x.vb, C[x.category][0], x.fixed_cves.join(' '), x.open_b.join(' '), x.target || ''])),
+    flt: (t) => { cur = cur === t.dataset.v ? '' : t.dataset.v; draw(); },
+    ccsv: () => downloadCSV(`porownanie-${r.a.name}-vs-${r.b.name}.csv`, ['Host', 'Spółka', 'Zespół', 'Właściciel', 'Aplikacja', 'Wersja przed', 'Wersja po', 'Wynik', 'Załatane CVE', 'Nadal otwarte', 'Docelowa'],
+      base.map((x) => [x.hostname, x.company, x.team, x.owner, x.product, x.va, x.vb, C[x.category][0], x.fixed_cves.join(' '), x.open_b.join(' '), x.target || ''])),
   });
 }
 
@@ -229,8 +285,8 @@ async function viewHostReport(el, [hid]) {
       <dt>Właściciel</dt><dd>${esc(h.owner || '—')}</dd><dt>Administrator</dt><dd>${esc(h.admin || '—')}</dd>
       ${h.notes ? `<dt>Uwagi</dt><dd>${esc(h.notes)}</dd>` : ''}</dl>
     <h2>Do wykonania (${todo.length})</h2>
-    ${todo.length ? `<table><thead><tr><th>Aplikacja</th><th>Obecna wersja</th><th>Aktualizuj do (min.)</th><th>Podatności</th><th>Termin KEV</th><th>Wykonano</th></tr></thead><tbody>
-      ${todo.map((i) => { const fs = i.findings.filter((f) => ACT.includes(f.status)); const due = fs.map((f) => f.kev_due).filter(Boolean).sort()[0];
+    ${todo.length ? `<table><thead><tr><th>Aplikacja</th><th>Obecna wersja</th><th>Aktualizuj do (min.)</th><th>Podatności</th><th>Termin</th><th>Wykonano</th></tr></thead><tbody>
+      ${todo.map((i) => { const fs = i.findings.filter((f) => ACT.includes(f.status)); const due = fs.map((f) => f.deadline).filter(Boolean).sort()[0];
         return `<tr><td><b>${esc(i.product)}</b></td><td class="mono">${esc(i.version)}</td>
         <td class="mono"><b>${esc(i.summary.target || '')}</b>${i.summary.nofix ? '<div class="small">brak poprawki w gałęzi — wymagana migracja</div>' : ''}</td>
         <td class="small">${fs.map((f) => `${f.kev ? '<span class="b kev">KEV</span> ' : ''}<span class="mono">${esc(f.cve)}</span>${f.status === 'review' ? ' <span class="b review">weryfikacja</span>' : ''}<br><span class="muted">${esc(f.reason)}</span>`).join('<br>')}</td>
@@ -257,8 +313,9 @@ async function viewProductReport(el, [pid]) {
     <table class="mt8"><thead><tr><th>Gałąź</th><th class="num">Hosty</th><th class="num">Do akcji</th><th>Wersje w użyciu</th><th>Wersja docelowa</th></tr></thead><tbody>
       ${r.branches.map((b) => `<tr><td class="mono">${esc(b.branch)}</td><td class="num">${b.hosts}</td><td class="num">${b.open}</td><td class="mono small">${esc(b.versions.join(', '))}</td><td class="mono">${esc(b.target || '—')}</td></tr>`).join('')}</tbody></table>
     <h2>Wymaga działań (${open.length})</h2>
-    ${open.length ? `<table><thead><tr><th>Host</th><th>Właściciel / admin</th><th>Ekspozycja</th><th>Wersja</th><th>Docelowa</th><th>CVE</th></tr></thead><tbody>
-      ${open.map((i) => `<tr><td><b>${esc(i.hostname)}</b><div class="small muted">${esc(i.ip || '')} ${esc(i.environment || '')}</div></td><td class="small">${esc(i.owner)}<br>${esc(i.admin)}</td>
+    ${open.length ? `<table><thead><tr><th>Host</th><th>Spółka / zespół</th><th>Właściciel / admin</th><th>Ekspozycja</th><th>Wersja</th><th>Docelowa</th><th>CVE</th></tr></thead><tbody>
+      ${open.map((i) => `<tr><td><b>${esc(i.hostname)}</b><div class="small muted">${esc(i.ip || '')} ${esc(i.environment || '')}</div></td>
+        <td class="small">${esc(i.company || '—')}<br>${esc(i.team_label || '')}</td><td class="small">${esc(i.owner)}<br>${esc(i.admin)}</td>
         <td>${expBadge(i.exposure)}</td><td class="mono">${esc(i.version)}</td><td class="mono"><b>${esc(i.summary.target || (i.summary.nofix ? 'migracja' : ''))}</b></td>
         <td class="small mono">${i.findings.filter((f) => ACT.includes(f.status)).map((f) => (f.kev ? 'KEV ' : '') + esc(f.cve)).join('<br>')}</td></tr>`).join('')}</tbody></table>` : '<p>Brak.</p>'}
     <h2>Pozostałe (${rest.length})</h2>
