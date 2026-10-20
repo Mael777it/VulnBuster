@@ -1,6 +1,6 @@
 <p align="center"><img src="docs/logo.png" width="160" alt="VulnBuster"></p>
 
-# VulnBuster — zarządzanie podatnościami (on-prem, wielu użytkowników)
+# VulnBuster — zarządzanie podatnościami (on-prem)
 
 *who you gonna patch?*
 
